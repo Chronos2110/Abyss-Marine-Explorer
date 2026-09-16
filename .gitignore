@@ -1,0 +1,4 @@
+.agent/
+.vscode/
+*.log
+.DS_store
