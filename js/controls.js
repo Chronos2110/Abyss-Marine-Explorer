@@ -1,17 +1,20 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/controls.js  v5
-   FIX 2: Gyroscope Initialization & Touch Lockout
+   ABYSS: Marine Explorer — js/controls.js  v6
+   FIX: Landscape Gyroscope Orientation & Touch Lockout
    
    CRITICAL RUNTIME ARCHITECTURE:
    - requestGyro(): async/await permission flow for iOS 13+ and Android.
      Invoked strictly from user-gesture handler (never on page load).
    - handleOrientation(): Latches _gyroActive = true on first valid event.
-     W3C ZXY Device Frame → -90° X premultiply → Screen angle correction → cameraRig.quaternion.
+     W3C YXZ Device Frame → Right-multiply -90° X correction (_q1) →
+     Left-multiply screen orientation correction (_q0) → cameraRig.quaternion.
      pitchObject is bypassed completely (rotation.set(0,0,0)).
-   - Cached quaternion & Euler objects allocated once at module scope (zero per-frame GC).
+   - Module-scoped cached math objects: _euler, _q0, _q1, _qFinal, _forwardVec
+     allocated once (zero per-frame garbage collection).
    - Touch lockout: pointermove is a strict no-op whenever _gyroActive is true.
    - getCameraPitchDeg(): Extracts forward vector from cameraRig.quaternion when gyroActive,
-     or pitchObject.rotation.x on desktop fallback.
+     clamping clampedY to [-1.0, 1.0] before Math.asin() (NaN guard), or pitchObject.rotation.x
+     on desktop fallback.
    - Pitch Zones Locomotion (XZ-projected forward swim):
        Dead zone     :   0° → -18° (nose down) — no movement
        Swim zone     : -18° → -38° (nose down) — forward swim 0 → SWIM_MAX
@@ -60,16 +63,15 @@ window.ABYSS = window.ABYSS || {};
   var _gyroActive = false;
 
   /* ─── Module-scoped cached objects (Allocated ONCE, reused every frame) ─── */
-  var _euler          = new THREE.Euler();
-  var _q              = new THREE.Quaternion();
-  var _qScreen        = new THREE.Quaternion();
-  var _mDeviceToWorld = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
-  var _correction     = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);
-  var _axisZ          = new THREE.Vector3(0, 0, 1);
-  var _fwdVector      = new THREE.Vector3();
-  var _worldFwd       = new THREE.Vector3();
-  var _swimYawQ       = new THREE.Quaternion();
-  var _yawEuler       = new THREE.Euler();
+  var _euler      = new THREE.Euler();
+  var _q0         = new THREE.Quaternion();
+  var _q1         = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2); // -90° X, constant
+  var _qFinal     = new THREE.Quaternion();
+  var _forwardVec = new THREE.Vector3();
+  var _axisZ      = new THREE.Vector3(0, 0, 1);
+  var _worldFwd   = new THREE.Vector3();
+  var _swimYawQ   = new THREE.Quaternion();
+  var _yawEuler   = new THREE.Euler();
 
   /* ─── clampRig — enforce world boundaries ───────────────────────────────── */
   function _clampRig() {
@@ -89,32 +91,32 @@ window.ABYSS = window.ABYSS || {};
     if (e.alpha === null || e.beta === null || e.gamma === null) return;
     if (!_gyroActive) _gyroActive = true;
 
-    // 1. Build device quaternion using ZXY order (W3C spec)
+    // Step 1: W3C device frame → Three.js frame using YXZ order
     _euler.set(
-      THREE.MathUtils.degToRad(e.beta),
-      THREE.MathUtils.degToRad(e.alpha),
-      THREE.MathUtils.degToRad(-e.gamma),
-      'ZXY'
+      THREE.MathUtils.degToRad(e.beta),   // X: device tilt front/back
+      THREE.MathUtils.degToRad(e.alpha),  // Y: compass heading
+      THREE.MathUtils.degToRad(-e.gamma), // Z: device roll (negated)
+      'YXZ'                               // YXZ avoids gimbal in landscape
     );
-    _q.setFromEuler(_euler);
+    _qFinal.setFromEuler(_euler);
 
-    // 2. Premultiply -90° X to convert portrait-up → world Y-up
-    _q.premultiply(_correction);
+    // Step 2: Convert portrait-up device frame to world Y-up
+    _qFinal.multiply(_q1);  // right-multiply constant -90° X correction
 
-    // 3. Adjust for landscape orientation lock
+    // Step 3: Compensate for physical screen rotation (landscape 90° / -90°)
     var screenAngle = (window.screen && window.screen.orientation && window.screen.orientation.angle !== undefined)
       ? window.screen.orientation.angle
       : (window.orientation || 0);
 
-    _qScreen.setFromAxisAngle(
+    _q0.setFromAxisAngle(
       _axisZ,
       -THREE.MathUtils.degToRad(screenAngle)
     );
-    _q.multiply(_qScreen);
+    _qFinal.premultiply(_q0);  // LEFT-multiply screen correction (critical)
 
-    // 4. Write directly to rig — bypass pitchObject entirely
+    // Step 4: Write to rig, neutralize pitchObject
     if (_rig) {
-      _rig.quaternion.copy(_q);
+      _rig.quaternion.copy(_qFinal);
     }
     if (_pitch) {
       _pitch.rotation.set(0, 0, 0);
@@ -146,13 +148,16 @@ window.ABYSS = window.ABYSS || {};
   /* ═══════════════════════════════════════════════════════════════════════════
      getCameraPitchDeg()
      When gyroActive, extracts pitch from cameraRig.quaternion via forward vector.
+     Includes NaN guard via Math.max/Math.min clamping on forwardVec.y.
      Otherwise reads pitchObject.rotation.x.
      Returns pitch in degrees: positive = nose-up, negative = nose-down (-90 to +90).
      ═══════════════════════════════════════════════════════════════════════════ */
   function getCameraPitchDeg() {
     if (_gyroActive && _rig) {
-      _fwdVector.set(0, 0, -1).applyQuaternion(_rig.quaternion);
-      return THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(_fwdVector.y, -1, 1)));
+      _forwardVec.set(0, 0, -1).applyQuaternion(_rig.quaternion);
+      // Clamp before asin — float precision can push y outside [-1, 1]
+      var clampedY = Math.max(-1.0, Math.min(1.0, _forwardVec.y));
+      return THREE.MathUtils.radToDeg(Math.asin(clampedY));
     }
     if (_pitch) {
       return THREE.MathUtils.radToDeg(_pitch.rotation.x);
@@ -188,7 +193,7 @@ window.ABYSS = window.ABYSS || {};
     });
 
     window.addEventListener('pointermove', function (e) {
-      if (!_isPointerDown || _gyroActive) return;  // gyro owns orientation
+      if (!_isPointerDown || _gyroActive) return;  // gyro owns orientation; block swipe
       var dx = e.clientX - _lastX;
       var dy = e.clientY - _lastY;
       _lastX = e.clientX;
