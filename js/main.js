@@ -156,6 +156,15 @@ window.ABYSS = window.ABYSS || {};
 
     _updateCameraAspect();
     _rig.position.set(0, 0, 0);
+
+    // Update camera world matrices before Controls reads direction from cameraL
+    _camL.updateMatrixWorld();
+    _camR.updateMatrixWorld();
+
+    // Pass cameraL as third argument — required for getWorldDirection()
+    if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
+      window.ABYSS.Controls.init(_rig, _pitchObj, _camL);
+    }
   }
 
   function _updateCameraAspect() {
@@ -827,15 +836,22 @@ window.ABYSS = window.ABYSS || {};
   function _loop(ts) {
     requestAnimationFrame(_loop);
 
-    var delta = Math.min((ts - _lastTS) / 1000, 0.1);   // cap at 100ms
+    var delta = Math.min((ts - _lastTS) / 1000, 0.05);   // cap at 50ms to prevent tunnelling
     _lastTS   = ts;
 
     if (_state === STATE.PLAYING) {
       var t = _clock.getElapsedTime();
 
-      // Module updates
+      // 1. Update camera world matrices FIRST so Controls reads current frame direction
+      if (_rig)  _rig.updateMatrixWorld();
+      if (_camL) _camL.updateMatrixWorld();
+      if (_camR) _camR.updateMatrixWorld();
+
+      // 2. Update controls (samples cameraL direction internally)
       if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.update)
         ABYSS.Controls.update(delta);
+
+      // 3. Update entities, HUD, oxygen etc.
       if (window.ABYSS && window.ABYSS.EnvironmentBuilder && ABYSS.EnvironmentBuilder.update)
         ABYSS.EnvironmentBuilder.update(t);
       if (window.ABYSS && window.ABYSS.EntityManager && ABYSS.EntityManager.update)
@@ -1018,7 +1034,7 @@ window.ABYSS = window.ABYSS || {};
 
     // Re-init controls rig references
     if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
-      ABYSS.Controls.init(_rig, _pitchObj);
+      ABYSS.Controls.init(_rig, _pitchObj, _camL);
     }
 
     _clock.start();
@@ -1054,7 +1070,7 @@ window.ABYSS = window.ABYSS || {};
     _initBgParticles();
 
     if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
-      ABYSS.Controls.init(_rig, _pitchObj);
+      ABYSS.Controls.init(_rig, _pitchObj, _camL);
     }
 
     _attachTorch();
@@ -1070,7 +1086,7 @@ window.ABYSS = window.ABYSS || {};
     if (lo) setTimeout(function () { lo.style.display = 'none'; }, 380);
 
     /* ── DIVE IN button ─────────────────────────────────────────── */
-    var diveBtn = document.getElementById('diveBtn');
+    var diveBtn = document.getElementById('diveBtn') || document.getElementById('btn-start-vr');
     if (diveBtn) {
       diveBtn.addEventListener('click', function () {
         // Step 1: AudioContext unlock — must be first in gesture (iOS policy)

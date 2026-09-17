@@ -1,26 +1,25 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/controls.js  v6
-   FIX: Landscape Gyroscope Orientation & Touch Lockout
+   ABYSS: Marine Explorer — js/controls.js  v7
+   1:1 Head Steering & Landscape Gyroscope Pipeline
    
    CRITICAL RUNTIME ARCHITECTURE:
-   - requestGyro(): async/await permission flow for iOS 13+ and Android.
-     Invoked strictly from user-gesture handler (never on page load).
-   - handleOrientation(): Latches _gyroActive = true on first valid event.
-     W3C YXZ Device Frame → Right-multiply -90° X correction (_q1) →
-     Left-multiply screen orientation correction (_q0) → cameraRig.quaternion.
-     pitchObject is bypassed completely (rotation.set(0,0,0)).
-   - Module-scoped cached math objects: _euler, _q0, _q1, _qFinal, _forwardVec
-     allocated once (zero per-frame garbage collection).
-   - Touch lockout: pointermove is a strict no-op whenever _gyroActive is true.
-   - getCameraPitchDeg(): Extracts forward vector from cameraRig.quaternion when gyroActive,
-     clamping clampedY to [-1.0, 1.0] before Math.asin() (NaN guard), or pitchObject.rotation.x
-     on desktop fallback.
-   - Pitch Zones Locomotion (XZ-projected forward swim):
-       Dead zone     :   0° → -18° (nose down) — no movement
-       Swim zone     : -18° → -38° (nose down) — forward swim 0 → SWIM_MAX
-       Full swim     :      > -38° (nose down) — clamped at SWIM_MAX
-       Ascent        :      > +25° (nose up)   — upward velocity 0 → ASCENT_MAX
-       Dive          :      < -45° (nose down) — downward velocity 0 → -DIVE_MAX
+   - Controls.init(cameraRig, pitchObject, cameraL):
+     cameraL reference stored at module scope exclusively for direction sampling.
+   - Module-scoped allocations (Zero Runtime Allocation Rule):
+     _lookDir, _flatDir, _euler, _q0, _q1, _qFinal, _forwardVec allocated once.
+   - Locomotion Zones (Y-component thresholds on normalized _lookDir):
+       HOVERING  : _lookDir.y >= -0.20 && _lookDir.y <=  0.28 → velocity lerps to 0
+       SWIMMING  : _lookDir.y <  -0.20 && _lookDir.y >= -0.68 → forward thrust along XZ
+       DIVING    : _lookDir.y <  -0.68                         → downward Y thrust, reduced XZ
+       ASCENDING : _lookDir.y >   0.28                         → upward Y thrust, reduced XZ
+   - Forward heading extracted via XZ-projection (_flatDir) — no Y bleed into horizontal thrust.
+   - Vertical velocity lerped separately and independently.
+   - Position clamped to: X [-40, 40], Y [-7, 8], Z [-60, 10].
+   - Gyroscope Pipeline:
+       W3C YXZ device frame → Right-multiply _q1 (-90° X) →
+       Left-multiply _q0 (screen orientation angle) → cameraRig.quaternion.
+       pitchObject is bypassed and zeroed out.
+   - Touch lockout: pointermove and pointerdown are strict no-ops when gyroActive === true.
    ============================================================================= */
 
 window.ABYSS = window.ABYSS || {};
@@ -29,97 +28,81 @@ window.ABYSS = window.ABYSS || {};
   'use strict';
 
   /* ─── Locomotion constants ───────────────────────────────────────────────── */
-  var WASD_SPEED   = 8.5;       // WASD desktop debug speed (units/sec)
-  var SWIM_MAX     = 6.5;       // max forward speed (units/sec)
-  var SWIM_DECEL_K = 0.08;      // lerp decel factor (seconds to near-zero)
-  var ASCENT_MAX   = 3.0;       // max upward speed (units/sec)
-  var DIVE_MAX     = 2.5;       // max downward speed (units/sec)
-  var VERT_DECEL_K = 0.08;      // lerp decel factor for vertical velocity
+  var WASD_SPEED = 8.5;       // WASD desktop debug speed (units/sec)
 
-  // Depth bounds (world Y) — must match environment.js seabed at Y=-8
-  var FLOOR_Y       = -8;
-  var SURFACE_Y     =  20;
-  var FLOOR_BOUND   = FLOOR_Y   + 1.5;   // -6.5
-  var SURFACE_BOUND = SURFACE_Y - 0.5;   //  19.5
+  /* ─── Module-scope references ────────────────────────────────────────────── */
+  var cameraRig   = null;
+  var pitchObject = null;
+  var cameraL     = null;
 
-  // Lerp acceleration factors
-  var SWIM_ACCEL_K = 3.5;
-  var VERT_ACCEL_K = 3.0;
-
-  /* ─── Private state ─────────────────────────────────────────────────────── */
-  var _rig   = null;
-  var _pitch = null;
-
-  var _keys          = {};
-  var _isPointerDown = false;
-  var _lastX         = 0;
-  var _lastY         = 0;
-  var _yaw           = 0;
-  var _pitchAngle    = 0;   // desktop mouse drag accumulated pitch (radians)
-
-  var _swimVel   = 0;       // forward velocity (units/sec), always ≥ 0
-  var _vertVel   = 0;       // vertical velocity (units/sec), + = up
-  var _swimState = 'HOVERING';
-  var _gyroActive = false;
-
-  /* ─── Module-scoped cached objects (Allocated ONCE, reused every frame) ─── */
+  /* ─── Module-scope cached allocations (Zero per-frame GC) ────────────────── */
+  var _lookDir    = new THREE.Vector3();
+  var _flatDir    = new THREE.Vector3();
   var _euler      = new THREE.Euler();
-  var _q0         = new THREE.Quaternion();
+  var _q0         = new THREE.Quaternion(); // screen orientation correction
   var _q1         = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2); // -90° X, constant
   var _qFinal     = new THREE.Quaternion();
   var _forwardVec = new THREE.Vector3();
-  var _axisZ      = new THREE.Vector3(0, 0, 1);
-  var _worldFwd   = new THREE.Vector3();
-  var _swimYawQ   = new THREE.Quaternion();
-  var _yawEuler   = new THREE.Euler();
+
+  var velocity         = new THREE.Vector3();
+  var currentSwimSpeed = 0;
+  var swimState        = 'HOVERING';
+  var gyroActive       = false;
+  var isPointerDown    = false;
+
+  var _keys          = {};
+  var _lastX         = 0;
+  var _lastY         = 0;
+  var _yaw           = 0;
+  var _pitchAngle    = 0;
 
   /* ─── clampRig — enforce world boundaries ───────────────────────────────── */
   function _clampRig() {
-    if (!_rig) return;
-    _rig.position.x = THREE.MathUtils.clamp(_rig.position.x, -55, 55);
-    _rig.position.y = THREE.MathUtils.clamp(_rig.position.y, FLOOR_BOUND, SURFACE_BOUND);
-    _rig.position.z = THREE.MathUtils.clamp(_rig.position.z, -85, 10);
+    if (!cameraRig) return;
+    cameraRig.position.x = THREE.MathUtils.clamp(cameraRig.position.x, -40,  40);
+    cameraRig.position.y = THREE.MathUtils.clamp(cameraRig.position.y,  -7,   8);
+    cameraRig.position.z = THREE.MathUtils.clamp(cameraRig.position.z, -60,  10);
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
      handleOrientation(e)
      W3C Device Frame → Three.js World Frame.
-     Latches _gyroActive = true on first valid event.
+     Latches gyroActive = true on first valid event.
      Bypasses pitchObject entirely and writes directly to cameraRig.quaternion.
      ═══════════════════════════════════════════════════════════════════════════ */
   function handleOrientation(e) {
     if (e.alpha === null || e.beta === null || e.gamma === null) return;
-    if (!_gyroActive) _gyroActive = true;
+    if (!gyroActive) gyroActive = true;
 
-    // Step 1: W3C device frame → Three.js frame using YXZ order
+    // Step 1: W3C device frame → Three.js using YXZ (correct for landscape)
     _euler.set(
       THREE.MathUtils.degToRad(e.beta),   // X: device tilt front/back
       THREE.MathUtils.degToRad(e.alpha),  // Y: compass heading
       THREE.MathUtils.degToRad(-e.gamma), // Z: device roll (negated)
-      'YXZ'                               // YXZ avoids gimbal in landscape
+      'YXZ'
     );
     _qFinal.setFromEuler(_euler);
 
-    // Step 2: Convert portrait-up device frame to world Y-up
-    _qFinal.multiply(_q1);  // right-multiply constant -90° X correction
+    // Step 2: Right-multiply to correct portrait-up → world Y-up (_q1 is constant)
+    _qFinal.multiply(_q1);
 
-    // Step 3: Compensate for physical screen rotation (landscape 90° / -90°)
+    // Step 3: Left-multiply for current screen orientation (re-read every event)
     var screenAngle = (window.screen && window.screen.orientation && window.screen.orientation.angle !== undefined)
       ? window.screen.orientation.angle
       : (window.orientation || 0);
 
     _q0.setFromAxisAngle(
-      _axisZ,
+      _forwardVec.set(0, 0, 1),
       -THREE.MathUtils.degToRad(screenAngle)
     );
-    _qFinal.premultiply(_q0);  // LEFT-multiply screen correction (critical)
+    _qFinal.premultiply(_q0);
 
-    // Step 4: Write to rig, neutralize pitchObject
-    if (_rig) {
-      _rig.quaternion.copy(_qFinal);
+    // Step 4: Write to rig only — pitchObject stays zeroed
+    if (cameraRig) {
+      cameraRig.quaternion.copy(_qFinal);
     }
-    if (_pitch) {
-      _pitch.rotation.set(0, 0, 0);
+    if (pitchObject) {
+      pitchObject.rotation.set(0, 0, 0);
     }
   }
 
@@ -131,9 +114,9 @@ window.ABYSS = window.ABYSS || {};
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
       try {
-        var state = await DeviceOrientationEvent.requestPermission();
-        if (state !== 'granted') {
-          console.warn('[ABYSS Controls] DeviceOrientation permission denied:', state);
+        var result = await DeviceOrientationEvent.requestPermission();
+        if (result !== 'granted') {
+          console.warn('[ABYSS Controls] DeviceOrientation permission denied:', result);
           return false;
         }
       } catch (err) {
@@ -146,54 +129,61 @@ window.ABYSS = window.ABYSS || {};
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     getCameraPitchDeg()
-     When gyroActive, extracts pitch from cameraRig.quaternion via forward vector.
-     Includes NaN guard via Math.max/Math.min clamping on forwardVec.y.
-     Otherwise reads pitchObject.rotation.x.
-     Returns pitch in degrees: positive = nose-up, negative = nose-down (-90 to +90).
+     getCameraPitchY() & getPitchDeg()
+     Samples cameraL direction directly (already normalized by Three.js, with
+     explicit normalization defense).
      ═══════════════════════════════════════════════════════════════════════════ */
-  function getCameraPitchDeg() {
-    if (_gyroActive && _rig) {
-      _forwardVec.set(0, 0, -1).applyQuaternion(_rig.quaternion);
-      // Clamp before asin — float precision can push y outside [-1, 1]
-      var clampedY = Math.max(-1.0, Math.min(1.0, _forwardVec.y));
-      return THREE.MathUtils.radToDeg(Math.asin(clampedY));
+  function getCameraPitchY() {
+    if (cameraL) {
+      cameraL.getWorldDirection(_lookDir);
+      _lookDir.normalize();
+      return _lookDir.y;
     }
-    if (_pitch) {
-      return THREE.MathUtils.radToDeg(_pitch.rotation.x);
+    return 0;
+  }
+
+  function getPitchDeg() {
+    if (cameraL) {
+      cameraL.getWorldDirection(_lookDir);
+      _lookDir.normalize();
+      var clampedY = Math.max(-1.0, Math.min(1.0, _lookDir.y));
+      return THREE.MathUtils.radToDeg(Math.asin(clampedY));
     }
     return 0;
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     init(cameraRig, pitchObject)
+     init(inCameraRig, inPitchObject, inCameraL)
+     Store all three references at module scope.
+     cameraL is used exclusively for direction sampling.
      ═══════════════════════════════════════════════════════════════════════════ */
-  function init(cameraRig, pitchObject) {
-    _rig   = cameraRig;
-    _pitch = pitchObject;
+  function init(inCameraRig, inPitchObject, inCameraL) {
+    cameraRig   = inCameraRig;
+    pitchObject = inPitchObject;
+    cameraL     = inCameraL || null;
 
-    _keys          = {};
-    _isPointerDown = false;
-    _yaw           = 0;
-    _pitchAngle    = 0;
-    _swimVel       = 0;
-    _vertVel       = 0;
-    _swimState     = 'HOVERING';
+    _keys            = {};
+    isPointerDown    = false;
+    _yaw             = 0;
+    _pitchAngle      = 0;
+    velocity.set(0, 0, 0);
+    currentSwimSpeed = 0;
+    swimState        = 'HOVERING';
 
     /* ── Keyboard fallback (WASD) ── */
     window.addEventListener('keydown', function (e) { _keys[e.key.toLowerCase()] = true;  });
     window.addEventListener('keyup',   function (e) { _keys[e.key.toLowerCase()] = false; });
 
-    /* ── Desktop pointer drag-look (Strict lockout when gyroActive) ── */
+    /* ── Touch / Pointer Lockout (Strict lockout when gyroActive) ── */
     window.addEventListener('pointerdown', function (e) {
-      if (_gyroActive) return;
-      _isPointerDown = true;
+      if (gyroActive) return;
+      isPointerDown = true;
       _lastX = e.clientX;
       _lastY = e.clientY;
     });
 
     window.addEventListener('pointermove', function (e) {
-      if (!_isPointerDown || _gyroActive) return;  // gyro owns orientation; block swipe
+      if (!isPointerDown || gyroActive) return;
       var dx = e.clientX - _lastX;
       var dy = e.clientY - _lastY;
       _lastX = e.clientX;
@@ -203,135 +193,115 @@ window.ABYSS = window.ABYSS || {};
       _pitchAngle -= dy * 0.003;
       _pitchAngle  = THREE.MathUtils.clamp(_pitchAngle, -Math.PI / 2, Math.PI / 2);
 
-      if (_rig)   _rig.rotation.y   = _yaw;
-      if (_pitch) _pitch.rotation.x = _pitchAngle;
+      if (cameraRig)   cameraRig.rotation.y   = _yaw;
+      if (pitchObject) pitchObject.rotation.x = _pitchAngle;
     });
 
-    window.addEventListener('pointerup', function () { _isPointerDown = false; });
-    window.addEventListener('pointercancel', function () { _isPointerDown = false; });
+    window.addEventListener('pointerup',     function () { isPointerDown = false; });
+    window.addEventListener('pointercancel', function () { isPointerDown = false; });
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
      update(delta)
-     Pitch-driven locomotion loop.
+     Called every frame AFTER cameraL.updateMatrixWorld() has been invoked.
      ═══════════════════════════════════════════════════════════════════════════ */
   function update(delta) {
-    if (!_rig || !_pitch) return;
+    if (!cameraRig || !pitchObject) return;
 
-    /* ── 1. WASD debug translation ── */
+    /* ── 1. WASD debug translation (desktop fallback) ── */
     var fwd    = (_keys['w'] || _keys['arrowup']    ? -1 : 0)
                + (_keys['s'] || _keys['arrowdown']   ?  1 : 0);
     var strafe = (_keys['a'] || _keys['arrowleft']   ? -1 : 0)
                + (_keys['d'] || _keys['arrowright']   ?  1 : 0);
 
     if (fwd !== 0 || strafe !== 0) {
-      var wasdVec = new THREE.Vector3(strafe, 0, fwd);
-      var currentYaw = _gyroActive ? 0 : _rig.rotation.y;
-      _yawEuler.set(0, currentYaw, 0);
-      _swimYawQ.setFromEuler(_yawEuler);
-      if (_gyroActive) {
-        _swimYawQ.copy(_rig.quaternion);
+      var wasdVec = _forwardVec.set(strafe, 0, fwd);
+      var currentYaw = gyroActive ? 0 : cameraRig.rotation.y;
+      var wasdQ = _q0.setFromEuler(_euler.set(0, currentYaw, 0));
+      if (gyroActive) {
+        wasdQ.copy(cameraRig.quaternion);
       }
-      wasdVec.applyQuaternion(_swimYawQ);
+      wasdVec.applyQuaternion(wasdQ);
       wasdVec.y = 0;
-      wasdVec.normalize().multiplyScalar(WASD_SPEED * delta);
-      _rig.position.add(wasdVec);
+      if (wasdVec.lengthSq() > 0.0001) wasdVec.normalize();
+      cameraRig.position.addScaledVector(wasdVec, WASD_SPEED * delta);
       _clampRig();
     }
 
-    /* ── 2. Read pitch angle from getCameraPitchDeg() ──
-       pitchDeg > 0 → nose-up (ascent)
-       pitchDeg < 0 → nose-down (swim & dive)
-    ── */
-    var pitchDeg    = getCameraPitchDeg();
-    var lookDownDeg = -pitchDeg;   // positive when tilted nose-down
-    var lookUpDeg   =  pitchDeg;   // positive when tilted nose-up
-
-    /* ── 3. Target forward swim velocity ──
-       Dead zone : 0° → 18° (nose down) — targetSwimVel = 0
-       Swim zone : 18° → 38° (nose down) — linear ramp 0 → SWIM_MAX
-       Full swim : > 38° (nose down) — SWIM_MAX (clamped)
-    ── */
-    var targetSwimVel = 0;
-    if (lookDownDeg > 18 && lookDownDeg <= 38) {
-      var tSwim = (lookDownDeg - 18) / (38 - 18);
-      targetSwimVel = tSwim * SWIM_MAX;
-    } else if (lookDownDeg > 38) {
-      targetSwimVel = SWIM_MAX;
-    }
-
-    /* ── 4. Lerp swimVel toward target ── */
-    if (targetSwimVel > 0.001) {
-      _swimVel = THREE.MathUtils.lerp(_swimVel, targetSwimVel,
-                   Math.min(SWIM_ACCEL_K * delta, 1.0));
+    /* ── 2. Sample gaze direction from cameraL ── */
+    if (cameraL) {
+      cameraL.getWorldDirection(_lookDir);
+      _lookDir.normalize();
     } else {
-      _swimVel = THREE.MathUtils.lerp(_swimVel, 0,
-                   Math.min(delta / SWIM_DECEL_K, 1.0));
-      if (_swimVel < 0.008) _swimVel = 0;
+      _lookDir.set(0, 0, -1);
     }
 
-    /* ── 5. Target vertical velocity ──
-       Ascent zone: lookUpDeg   > 25° (nose up)   — upward velocity 0 → ASCENT_MAX
-       Dive zone  : lookDownDeg > 45° (nose down) — downward velocity 0 → -DIVE_MAX
+    /* ── 3. Locomotion zones based on _lookDir.y ──
+       HOVERING  : >= -0.20 && <= 0.28 → all velocity lerps to 0
+       SWIMMING  : <  -0.20 && >= -0.68 → forward thrust along XZ heading
+       DIVING    : <  -0.68             → downward Y thrust, reduced XZ
+       ASCENDING : >   0.28             → upward Y thrust, reduced XZ
     ── */
-    var targetVertVel = 0;
-    if (lookUpDeg > 25) {
-      var tUp = Math.min((lookUpDeg - 25) / 45, 1.0); // 25° → 70°
-      targetVertVel = tUp * ASCENT_MAX;
-    } else if (lookDownDeg > 45) {
-      var tDown = Math.min((lookDownDeg - 45) / 30, 1.0); // 45° → 75°
-      targetVertVel = -tDown * DIVE_MAX;
-    }
+    var targetSwimSpeed = 0;
 
-    /* ── 6. Lerp vertVel toward target ── */
-    if (Math.abs(targetVertVel) > 0.008) {
-      _vertVel = THREE.MathUtils.lerp(_vertVel, targetVertVel,
-                   Math.min(VERT_ACCEL_K * delta, 1.0));
+    if (_lookDir.y > 0.28) {
+      // ASCENDING
+      swimState = 'ASCENDING';
+      targetSwimSpeed = 1.5; // reduced XZ
+      velocity.y = THREE.MathUtils.lerp(velocity.y, 2.8, delta * 4.0);
+    } else if (_lookDir.y < -0.68) {
+      // DIVING
+      swimState = 'DIVING';
+      targetSwimSpeed = 1.8; // reduced XZ
+      velocity.y = THREE.MathUtils.lerp(velocity.y, -2.5, delta * 4.0);
+    } else if (_lookDir.y < -0.20) {
+      // SWIMMING (forward thrust along XZ heading, neutral vertical)
+      swimState = 'SWIMMING';
+      // t: 0 at boundary (-0.20), 1 at full swim (-0.68)
+      var t = Math.min(1.0, (_lookDir.y + 0.20) / -0.48);
+      targetSwimSpeed = THREE.MathUtils.lerp(0, 6.5, t);
+      velocity.y = THREE.MathUtils.lerp(velocity.y, 0.0, delta * 4.0);
     } else {
-      _vertVel = THREE.MathUtils.lerp(_vertVel, 0,
-                   Math.min(delta / VERT_DECEL_K, 1.0));
-      if (Math.abs(_vertVel) < 0.008) _vertVel = 0;
+      // HOVERING (-0.20 <= _lookDir.y <= 0.28)
+      swimState = 'HOVERING';
+      targetSwimSpeed = 0.0;
+      velocity.y = THREE.MathUtils.lerp(velocity.y, 0.0, delta * 4.0);
     }
 
-    /* ── 7. Apply forward swim velocity — XZ projection ONLY ── */
-    if (_swimVel > 0.008) {
-      if (_gyroActive) {
-        _worldFwd.set(0, 0, -1).applyQuaternion(_rig.quaternion);
-      } else {
-        _yawEuler.set(0, _rig.rotation.y, 0);
-        _swimYawQ.setFromEuler(_yawEuler);
-        _worldFwd.set(0, 0, -1).applyQuaternion(_swimYawQ);
-      }
-      _worldFwd.y = 0;
-      _worldFwd.normalize();
-      _worldFwd.multiplyScalar(_swimVel * delta);
-      _rig.position.add(_worldFwd);
+    // Lerp horizontal swim speed
+    currentSwimSpeed = THREE.MathUtils.lerp(
+      currentSwimSpeed,
+      targetSwimSpeed,
+      Math.min(delta * 3.5, 1.0)
+    );
+    if (currentSwimSpeed < 0.008 && targetSwimSpeed === 0) {
+      currentSwimSpeed = 0;
     }
 
-    /* ── 8. Apply vertical velocity with hard depth bounds ── */
-    if (Math.abs(_vertVel) > 0.008) {
-      _rig.position.y += _vertVel * delta;
+    // Forward heading extraction: project lookDir onto XZ plane (no Y bleed)
+    _flatDir.set(_lookDir.x, 0, _lookDir.z);
+    if (_flatDir.lengthSq() > 0.0001) {
+      _flatDir.normalize();
     }
-    _rig.position.y = THREE.MathUtils.clamp(_rig.position.y, FLOOR_BOUND, SURFACE_BOUND);
+
+    velocity.x = _flatDir.x * currentSwimSpeed;
+    velocity.z = _flatDir.z * currentSwimSpeed;
+
+    // Zero out velocity when hovering and nearly stopped
+    if (swimState === 'HOVERING' && currentSwimSpeed === 0 && Math.abs(velocity.y) < 0.008) {
+      velocity.set(0, 0, 0);
+    }
+
+    /* ── 4. Position Integration & Clamping ── */
+    cameraRig.position.addScaledVector(velocity, delta);
     _clampRig();
 
-    /* ── 9. Derive swimState string for HUD ── */
-    if (_vertVel > 0.08) {
-      _swimState = 'ASCENDING';
-    } else if (_vertVel < -0.08) {
-      _swimState = 'DIVING';
-    } else if (_swimVel > 0.08) {
-      _swimState = 'SWIMMING';
-    } else {
-      _swimState = 'HOVERING';
-    }
-
-    /* ── 10. Publish rig position for entity proximity checks ── */
+    /* ── 5. Publish rig position for entity proximity checks (shark, etc.) ── */
     if (window.ABYSS) {
       if (!window.ABYSS._rigPosition) {
         window.ABYSS._rigPosition = new THREE.Vector3();
       }
-      window.ABYSS._rigPosition.copy(_rig.position);
+      window.ABYSS._rigPosition.copy(cameraRig.position);
     }
   }
 
@@ -341,16 +311,15 @@ window.ABYSS = window.ABYSS || {};
   window.ABYSS.Controls = {
     init:              init,
     update:            update,
+    getSwimState:      function () { return swimState; },
+    getVelocity:       function () { return velocity; },
     requestGyro:       requestGyro,
-    getVelocity:       function () { return _swimVel; },
-    getSwimState:      function () { return _swimState; },
-    getPitchDeg:       getCameraPitchDeg,
-    getCameraPitchDeg: getCameraPitchDeg,
+    get gyroActive()   { return gyroActive; },
+    get isGyroActive() { return gyroActive; },
+    getCameraPitchY:   getCameraPitchY,
+    getPitchDeg:       getPitchDeg,
     get swimStatus() {
-      return _swimVel > 0.05 ? 'ON' : 'OFF';
-    },
-    get isGyroActive() {
-      return _gyroActive;
+      return (Math.abs(velocity.x) > 0.05 || Math.abs(velocity.z) > 0.05) ? 'ON' : 'OFF';
     }
   };
 
