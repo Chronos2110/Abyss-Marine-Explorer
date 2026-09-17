@@ -3,9 +3,11 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com;">
   <meta name="description"
     content="ABYSS: Marine Explorer — Immersive side-by-side VR underwater exploration. Scan marine life, collect pollution, unlock the research station.">
   <title>ABYSS: Marine Explorer</title>
@@ -20,14 +22,53 @@
   <div id="loadingOverlay">
     <div class="ld-ring"></div>
     <p class="ld-label">INITIALIZING SYSTEMS</p>
-    <p class="ld-sub">ABYSS MARINE EXPLORER v2</p>
+    <p class="ld-sub">ABYSS MARINE EXPLORER v3</p>
   </div>
 
   <!-- ══════════════════════════════════════════
        CANVAS STACK
+       #vrCanvas: position:fixed fills Capacitor WebView
+       #hudCanvas: dynamic reticle + numeric readouts
        ══════════════════════════════════════════ -->
   <canvas id="vrCanvas"></canvas>
   <canvas id="hudCanvas"></canvas>
+
+  <!-- ══════════════════════════════════════════
+       HELMET VIGNETTE OVERLAY — static SVG layer
+       pointer-events:none, z-index:10 (above vrCanvas z:1, below HUD z:20)
+       Renders over BOTH stereoscopic viewports simultaneously.
+       Condensation streaks are static — dynamic reticle stays on hudCanvas.
+       ══════════════════════════════════════════ -->
+  <div id="helmetOverlay" aria-hidden="true">
+    <!-- Oval vignette radial gradient — handled in CSS via ::before pseudo -->
+
+    <!-- SVG frame arc + condensation streaks -->
+    <svg id="helmetSVG" xmlns="http://www.w3.org/2000/svg"
+         preserveAspectRatio="none" viewBox="0 0 1000 500">
+
+      <!-- Outer helmet frame ellipse — stroke only, no fill -->
+      <ellipse cx="500" cy="250" rx="494" ry="245"
+               fill="none" stroke="#1a3a4a" stroke-width="3" opacity="0.85"/>
+
+      <!-- Left eye condensation streaks (upper-left quadrant) -->
+      <line x1="68"  y1="18"  x2="60"  y2="90"  stroke="white" stroke-width="4" opacity="0.05"/>
+      <line x1="102" y1="12"  x2="96"  y2="78"  stroke="white" stroke-width="3" opacity="0.07"/>
+      <line x1="140" y1="20"  x2="132" y2="82"  stroke="white" stroke-width="2" opacity="0.04"/>
+      <line x1="175" y1="14"  x2="171" y2="68"  stroke="white" stroke-width="3" opacity="0.06"/>
+      <line x1="88"  y1="38"  x2="82"  y2="100" stroke="white" stroke-width="2" opacity="0.03"/>
+
+      <!-- Right eye condensation streaks (upper-right quadrant) -->
+      <line x1="568"  y1="18"  x2="560"  y2="90"  stroke="white" stroke-width="4" opacity="0.06"/>
+      <line x1="602" y1="12"  x2="596"  y2="78"  stroke="white" stroke-width="3" opacity="0.05"/>
+      <line x1="640" y1="20"  x2="632" y2="82"  stroke="white" stroke-width="2" opacity="0.07"/>
+      <line x1="675" y1="14"  x2="671" y2="68"  stroke="white" stroke-width="3" opacity="0.04"/>
+      <line x1="588"  y1="38"  x2="582"  y2="100" stroke="white" stroke-width="2" opacity="0.08"/>
+
+      <!-- Center nose bridge divider — subtle vertical bar -->
+      <line x1="500" y1="60" x2="500" y2="440"
+            stroke="#1a3a4a" stroke-width="2" opacity="0.55"/>
+    </svg>
+  </div>
 
   <!-- ══════════════════════════════════════════
        START / PERMISSION OVERLAY  (#overlay)
@@ -44,14 +85,15 @@
       <p class="menu-brief">
         Descend into a living deep-sea ecosystem.<br>
         Scan five species, remove four pollution sources,<br>
-        and unlock the research station before your oxygen runs out.
+        activate the power conduit, and unlock the research station<br>
+        before your oxygen runs out.
       </p>
 
       <div class="inst-grid">
         <div class="inst-cell"><span class="inst-key">LOOK</span>Drag or tilt device to explore</div>
+        <div class="inst-cell"><span class="inst-key">SWIM</span>Nose-down gaze (−18° to −38°)</div>
         <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 2 s</div>
-        <div class="inst-cell"><span class="inst-key">MOVE</span>WASD / Arrow keys</div>
-        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · station</div>
+        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · conduit · station</div>
       </div>
 
       <button id="diveBtn" class="cta-btn">▼ &nbsp;DIVE IN&nbsp; ▼</button>
@@ -72,12 +114,13 @@
 
   <!-- ══════════════════════════════════════════
        SCRIPTS — dependency order
+       Three.js r128 via CDN (relative-path compatible)
        ══════════════════════════════════════════ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="js/audio.js"></script>
-  <script src="js/controls.js"></script>
-  <script src="js/entities.js"></script>
   <script src="js/environment.js"></script>
+  <script src="js/entities.js"></script>
+  <script src="js/controls.js"></script>
   <script src="js/main.js"></script>
 
 </body>

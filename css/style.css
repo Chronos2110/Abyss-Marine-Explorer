@@ -1,6 +1,8 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — css/style.css
-   Cyber-nautical full-bleed design system
+   ABYSS: Marine Explorer — css/style.css  v3
+   Cyber-nautical full-bleed design system.
+   Static layer: helmet vignette, condensation overlays.
+   Dynamic layer: hudCanvas (canvas 2D — zero DOM reflow).
    ============================================================================= */
 
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap');
@@ -18,6 +20,7 @@
   --blue:    #00aaff;
   --navy:    #041b33;
   --dark:    #020a18;
+  --abyss:   #041a2e;
   --warn:    #ff4444;
   --amber:   #ffaa00;
   --glass:   rgba(4, 27, 51, 0.82);
@@ -30,7 +33,7 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #020a18;
+  background: var(--abyss);
   font-family: var(--font-hud);
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
@@ -39,25 +42,57 @@ html, body {
 
 /* ─── Canvas Stack ──────────────────────────────────────────────────────────── */
 
+/* #vrCanvas: position:fixed fills Capacitor WebView exactly */
 #vrCanvas {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
   display: block;
   z-index: 1;
 }
 
+/* #hudCanvas: dynamic reticle arc + numeric HUD — no pointer events */
 #hudCanvas {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
   display: block;
   pointer-events: none;
-  z-index: 2;
+  z-index: 20;
+}
+
+/* ─── Helmet Vignette Overlay ───────────────────────────────────────────────
+   Static layer above vrCanvas (z:1), below hudCanvas (z:20).
+   Radial vignette via ::before; SVG frame/streaks in child SVG element.
+   pointer-events:none prevents any interaction capture.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+#helmetOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  /* Dark oval vignette — feathers inward ~18% from all edges, 80% opacity */
+  background:
+    radial-gradient(
+      ellipse 70% 65% at 50% 50%,
+      transparent 54%,
+      rgba(2, 6, 18, 0.48) 68%,
+      rgba(1, 4, 14, 0.80) 100%
+    );
+}
+
+/* SVG fills the full overlay; viewBox allows proportional scaling */
+#helmetSVG {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 /* ─── Loading Overlay ───────────────────────────────────────────────────────── */
@@ -106,7 +141,7 @@ html, body {
 #endOverlay {
   position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 200;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -148,7 +183,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   gap: 0;
-  max-width: 520px;
+  max-width: 540px;
   width: 100%;
   padding: 40px 32px;
   background: var(--glass);
@@ -268,6 +303,7 @@ html, body {
   cursor: pointer;
   position: relative;
   overflow: hidden;
+  isolation: isolate;
   transition: color 0.22s, background 0.22s, box-shadow 0.22s;
   animation: btnPulse 3s ease-in-out infinite;
 }
@@ -280,6 +316,7 @@ html, body {
   transform: scaleX(0);
   transform-origin: left;
   transition: transform 0.22s;
+  z-index: -1;
 }
 
 .cta-btn:hover {
@@ -289,13 +326,6 @@ html, body {
 
 .cta-btn:hover::before { transform: scaleX(1); }
 .cta-btn:active { transform: scale(0.97); }
-
-.cta-btn span, .cta-btn > * { position: relative; z-index: 1; }
-
-/* Text inside button needs to sit above ::before */
-.cta-btn {
-  isolation: isolate;
-}
 
 @keyframes btnPulse {
   0%, 100% { box-shadow: 0 0 12px rgba(0,255,204,0.25); }
@@ -316,8 +346,17 @@ html, body {
   font-size: clamp(0.65rem, 1.8vw, 0.82rem);
   color: rgba(178, 235, 242, 0.85);
   line-height: 1.9;
-  max-width: 380px;
+  max-width: 400px;
   letter-spacing: 0.04em;
+}
+
+/* ─── O₂ Bar Red-Pulse Keyframe (consumed by hudCanvas JS timing) ────────────
+   NOTE: actual O₂ bar is drawn on hudCanvas (canvas 2D, zero DOM reflow).
+   This keyframe is kept here for reference / future CSS-driven fallback.
+   ─────────────────────────────────────────────────────────────────────────── */
+@keyframes o2Pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
 }
 
 /* ─── Utility ───────────────────────────────────────────────────────────────── */
