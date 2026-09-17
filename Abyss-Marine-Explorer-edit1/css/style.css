@@ -1,0 +1,293 @@
+/* =============================================================================
+   ABYSS: Marine Explorer — v2 Stylesheet
+   ============================================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: 'Courier New', Courier, monospace;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+/* =============================================================================
+   CANVAS STACK
+   ============================================================================= */
+
+#vrCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#hudCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* =============================================================================
+   OVERLAY BASE
+   ============================================================================= */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 10, 24, 0.92);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 10;
+  color: #fff;
+  text-align: center;
+  padding: 20px;
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  max-width: 540px;
+  width: 100%;
+}
+
+/* =============================================================================
+   START SCREEN
+   ============================================================================= */
+
+#overlay {
+  background: radial-gradient(ellipse at center, #020e1f 0%, #000508 70%);
+}
+
+#bgParticles {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.title {
+  font-family: 'Orbitron', 'Courier New', monospace;
+  font-size: clamp(3rem, 8vw, 6rem);
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  color: #00ffcc;
+  text-shadow: 0 0 30px #00ffcc, 0 0 60px #00aaff, 0 0 100px #0077ff;
+  margin-bottom: 8px;
+  animation: titlePulse 3s ease-in-out infinite;
+}
+
+@keyframes titlePulse {
+  0%, 100% { text-shadow: 0 0 30px #00ffcc, 0 0 60px #00aaff; }
+  50%       { text-shadow: 0 0 50px #00ffcc, 0 0 90px #00aaff, 0 0 130px #0077ff; }
+}
+
+.subtitle {
+  font-size: clamp(0.7rem, 2.5vw, 1rem);
+  letter-spacing: 0.35em;
+  color: #4fc3f7;
+  margin-bottom: 32px;
+  opacity: 0.85;
+  text-transform: uppercase;
+}
+
+.divider {
+  width: 120px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #00ffcc, transparent);
+  margin-bottom: 28px;
+}
+
+.instructions {
+  font-size: clamp(0.65rem, 2vw, 0.82rem);
+  color: #80cbc4;
+  line-height: 1.8;
+  margin-bottom: 40px;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+
+/* =============================================================================
+   INSTRUCTION GRID
+   ============================================================================= */
+
+.inst-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  max-width: 420px;
+  width: 100%;
+  margin-bottom: 44px;
+}
+
+.inst-item {
+  background: rgba(0, 255, 204, 0.05);
+  border: 1px solid rgba(0, 255, 204, 0.18);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 0.68rem;
+  color: #b2ebf2;
+  line-height: 1.5;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.inst-item:hover {
+  border-color: rgba(0, 255, 204, 0.4);
+  background: rgba(0, 255, 204, 0.09);
+}
+
+.inst-item span {
+  display: block;
+  font-size: 0.78rem;
+  color: #00ffcc;
+  margin-bottom: 4px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* =============================================================================
+   DIVE BUTTON
+   ============================================================================= */
+
+.dive-btn {
+  border: 2px solid #00ffcc;
+  color: #00ffcc;
+  background: transparent;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: clamp(0.9rem, 3vw, 1.2rem);
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  padding: 1rem 3rem;
+  cursor: pointer;
+  border-radius: 4px;
+  text-transform: uppercase;
+  position: relative;
+  overflow: hidden;
+  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
+  animation: btnGlow 2.5s ease-in-out infinite;
+}
+
+.dive-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(0,255,204,0.08), transparent);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.dive-btn:hover {
+  background: #00ffcc;
+  color: #020a18;
+  box-shadow: 0 0 40px rgba(0,255,204,0.6), 0 0 80px rgba(0,119,255,0.3);
+}
+
+.dive-btn:hover::before {
+  opacity: 1;
+}
+
+.dive-btn:active {
+  transform: scale(0.97);
+}
+
+@keyframes btnGlow {
+  0%, 100% { box-shadow: 0 0 20px rgba(0,255,204,0.3); }
+  50%       { box-shadow: 0 0 40px rgba(0,255,204,0.7), 0 0 70px rgba(0,119,255,0.4); }
+}
+
+/* =============================================================================
+   GAME OVER / MISSION COMPLETE OVERLAY
+   ============================================================================= */
+
+#gameOverlay {
+  z-index: 20;
+}
+
+#gameOverlay .overlay-content {
+  gap: 16px;
+}
+
+#overlayTitle {
+  font-family: 'Orbitron', 'Courier New', monospace;
+  font-size: clamp(1.6rem, 6vw, 3rem);
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  margin-bottom: 4px;
+}
+
+#overlayMsg {
+  font-size: clamp(0.7rem, 2vw, 0.9rem);
+  color: #b2ebf2;
+  letter-spacing: 0.08em;
+  max-width: 400px;
+  line-height: 1.8;
+  margin-bottom: 16px;
+}
+
+/* =============================================================================
+   LOADING OVERLAY
+   ============================================================================= */
+
+#loadingOverlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  color: #00ffcc;
+  font-size: 0.9rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 2px solid rgba(0, 255, 204, 0.15);
+  border-top-color: #00ffcc;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 20px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =============================================================================
+   UTILITY
+   ============================================================================= */
+
+.hidden {
+  display: none !important;
+}
