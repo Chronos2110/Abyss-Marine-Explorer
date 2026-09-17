@@ -1,206 +1,218 @@
-// =============================================================================
-// ABYSS: Marine Explorer — audio.js
-// All synthesized sounds. Exposed on window.ABYSS.Audio.
-// AudioContext must be created (or resumed) inside a user-gesture handler.
-// =============================================================================
+/* =============================================================================
+   ABYSS: Marine Explorer — js/audio.js
+   Web Audio API synthesizer. Exposes window.SoundSystem.
+   All AudioContext creation is deferred to first user gesture.
+   ============================================================================= */
 
-window.ABYSS = window.ABYSS || {};
-
-window.ABYSS.Audio = (function () {
+(function () {
   'use strict';
 
-  var _ctx = null;
-  var _bubbleTimeout = null;
-  var _humNode = null;
+  var ctx = null;
+  var _humSource = null;
+  var _bubbleTimer = null;
+  var _isDiving = false;
 
-  // ---------------------------------------------------------------------------
-  // init — store AudioContext reference
-  // ---------------------------------------------------------------------------
-  function init(audioContext) {
-    _ctx = audioContext;
-  }
-
-  // ---------------------------------------------------------------------------
-  // playOceanHum — filtered white-noise loop, call once on dive start
-  // ---------------------------------------------------------------------------
-  function playOceanHum() {
-    if (!_ctx) return;
-    if (_humNode) return; // already playing
+  /* ─────────────────────────────────────────────────────────────────────────
+     INIT — call inside a user-gesture handler (click / touch)
+     ───────────────────────────────────────────────────────────────────────── */
+  function init() {
+    if (ctx) return; // already initialised
     try {
-      var bufSize = _ctx.sampleRate * 2;
-      var buf = _ctx.createBuffer(1, bufSize, _ctx.sampleRate);
-      var data = buf.getChannelData(0);
-      for (var i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
-
-      var src = _ctx.createBufferSource();
-      src.buffer = buf;
-      src.loop = true;
-
-      var filt = _ctx.createBiquadFilter();
-      filt.type = 'lowpass';
-      filt.frequency.value = 200;
-
-      var gain = _ctx.createGain();
-      gain.gain.value = 0.12;
-
-      src.connect(filt);
-      filt.connect(gain);
-      gain.connect(_ctx.destination);
-      src.start();
-      _humNode = src;
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
     } catch (e) {
-      console.warn('[ABYSS.Audio] playOceanHum failed:', e);
+      console.warn('[SoundSystem] AudioContext unavailable:', e);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // playBubbleChirp — single burst bandpass noise
-  // ---------------------------------------------------------------------------
-  function playBubbleChirp() {
-    if (!_ctx) return;
-    try {
-      var bufSize = Math.floor(_ctx.sampleRate * 0.1);
-      var buf = _ctx.createBuffer(1, bufSize, _ctx.sampleRate);
-      var data = buf.getChannelData(0);
-      for (var i = 0; i < bufSize; i++) {
-        data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
-      }
-
-      var src = _ctx.createBufferSource();
-      src.buffer = buf;
-
-      var filt = _ctx.createBiquadFilter();
-      filt.type = 'bandpass';
-      filt.frequency.value = 800;
-      filt.Q.value = 2;
-
-      var gain = _ctx.createGain();
-      gain.gain.value = 0.25;
-
-      src.connect(filt);
-      filt.connect(gain);
-      gain.connect(_ctx.destination);
-      src.start();
-    } catch (e) {
-      console.warn('[ABYSS.Audio] playBubbleChirp failed:', e);
+  function resume() {
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(function () {});
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // _scheduleBubble — internal recurring bubble scheduler
-  // ---------------------------------------------------------------------------
-  function _scheduleBubble(getGameStateFn) {
-    var delay = 4000 + Math.random() * 5000;
-    _bubbleTimeout = setTimeout(function () {
-      if (typeof getGameStateFn === 'function' && getGameStateFn()) {
-        playBubbleChirp();
+  /* ─────────────────────────────────────────────────────────────────────────
+     OCEAN HUM — looped white-noise through 180 Hz lowpass
+     ───────────────────────────────────────────────────────────────────────── */
+  function startOceanHum() {
+    if (!ctx || _humSource) return;
+    try {
+      var bufLen = ctx.sampleRate * 2;
+      var buf    = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      var data   = buf.getChannelData(0);
+      for (var i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+
+      var src  = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop   = true;
+
+      var lp = ctx.createBiquadFilter();
+      lp.type            = 'lowpass';
+      lp.frequency.value = 180;
+      lp.Q.value         = 0.7;
+
+      var gain = ctx.createGain();
+      gain.gain.value = 0.11;
+
+      src.connect(lp);
+      lp.connect(gain);
+      gain.connect(ctx.destination);
+      src.start();
+      _humSource = src;
+    } catch (e) {
+      console.warn('[SoundSystem] startOceanHum failed:', e);
+    }
+  }
+
+  function stopOceanHum() {
+    if (_humSource) {
+      try { _humSource.stop(); } catch (e) {}
+      _humSource = null;
+    }
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     BUBBLE CHIRP — bandpass noise burst
+     ───────────────────────────────────────────────────────────────────────── */
+  function _playBubbleChirp() {
+    if (!ctx) return;
+    try {
+      var bufLen = Math.floor(ctx.sampleRate * 0.085);
+      var buf    = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      var data   = buf.getChannelData(0);
+      for (var i = 0; i < bufLen; i++) {
+        data[i] = (Math.random() * 2 - 1) * (1 - i / bufLen);
       }
-      _scheduleBubble(getGameStateFn);
+      var src = ctx.createBufferSource();
+      src.buffer = buf;
+
+      var bp = ctx.createBiquadFilter();
+      bp.type            = 'bandpass';
+      bp.frequency.value = 750 + Math.random() * 200;
+      bp.Q.value         = 2.5;
+
+      var gain = ctx.createGain();
+      gain.gain.value = 0.22;
+
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(ctx.destination);
+      src.start();
+    } catch (e) {}
+  }
+
+  function _scheduleBubble() {
+    var delay = 3000 + Math.random() * 4000; // 3–7 s
+    _bubbleTimer = setTimeout(function () {
+      if (_isDiving) _playBubbleChirp();
+      _scheduleBubble();
     }, delay);
   }
 
-  function startBubbleLoop(getGameStateFn) {
-    if (_bubbleTimeout) clearTimeout(_bubbleTimeout);
-    _scheduleBubble(getGameStateFn);
+  function startBubbleLoop() {
+    _isDiving = true;
+    if (_bubbleTimer) clearTimeout(_bubbleTimer);
+    _scheduleBubble();
   }
 
   function stopBubbleLoop() {
-    if (_bubbleTimeout) {
-      clearTimeout(_bubbleTimeout);
-      _bubbleTimeout = null;
+    _isDiving = false;
+    if (_bubbleTimer) {
+      clearTimeout(_bubbleTimer);
+      _bubbleTimer = null;
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // playSonarPing — freq ramp 800 → 300 Hz
-  // ---------------------------------------------------------------------------
+  /* ─────────────────────────────────────────────────────────────────────────
+     SONAR PING — 840 Hz → 320 Hz exponential sweep
+     ───────────────────────────────────────────────────────────────────────── */
   function playSonarPing() {
-    if (!_ctx) return;
+    if (!ctx) return;
     try {
-      var osc = _ctx.createOscillator();
+      var osc  = ctx.createOscillator();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(800, _ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(300, _ctx.currentTime + 0.8);
+      osc.frequency.setValueAtTime(840, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(320, ctx.currentTime + 0.75);
 
-      var gain = _ctx.createGain();
-      gain.gain.setValueAtTime(0.3, _ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, _ctx.currentTime + 0.8);
+      var gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.28, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.75);
 
       osc.connect(gain);
-      gain.connect(_ctx.destination);
+      gain.connect(ctx.destination);
       osc.start();
-      osc.stop(_ctx.currentTime + 0.8);
+      osc.stop(ctx.currentTime + 0.75);
     } catch (e) {
-      console.warn('[ABYSS.Audio] playSonarPing failed:', e);
+      console.warn('[SoundSystem] playSonarPing:', e);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // playScanChime — two-tone confirmation (880 Hz, 1108 Hz)
-  // ---------------------------------------------------------------------------
+  /* ─────────────────────────────────────────────────────────────────────────
+     SCAN CHIME — 880 Hz + 1108 Hz two-tone confirmation
+     ───────────────────────────────────────────────────────────────────────── */
   function playScanChime() {
-    if (!_ctx) return;
+    if (!ctx) return;
     try {
       [880, 1108].forEach(function (freq, i) {
-        var osc = _ctx.createOscillator();
+        var osc  = ctx.createOscillator();
         osc.type = 'sine';
         osc.frequency.value = freq;
 
-        var gain = _ctx.createGain();
-        var t = _ctx.currentTime + i * 0.3;
+        var gain = ctx.createGain();
+        var t    = ctx.currentTime + i * 0.28;
         gain.gain.setValueAtTime(0, t);
-        gain.gain.linearRampToValueAtTime(0.3, t + 0.05);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+        gain.gain.linearRampToValueAtTime(0.28, t + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
 
         osc.connect(gain);
-        gain.connect(_ctx.destination);
+        gain.connect(ctx.destination);
         osc.start(t);
-        osc.stop(t + 0.3);
+        osc.stop(t + 0.28);
       });
     } catch (e) {
-      console.warn('[ABYSS.Audio] playScanChime failed:', e);
+      console.warn('[SoundSystem] playScanChime:', e);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // playMissionSuccess — ascending arpeggio (523, 659, 784, 1047 Hz)
-  // ---------------------------------------------------------------------------
-  function playMissionSuccess() {
-    if (!_ctx) return;
+  /* ─────────────────────────────────────────────────────────────────────────
+     VICTORY CHORD — ascending arpeggio
+     ───────────────────────────────────────────────────────────────────────── */
+  function playVictory() {
+    if (!ctx) return;
     try {
-      [523, 659, 784, 1047].forEach(function (freq, i) {
-        var osc = _ctx.createOscillator();
+      [523, 659, 784, 1047, 1318].forEach(function (freq, i) {
+        var osc  = ctx.createOscillator();
         osc.type = 'sine';
         osc.frequency.value = freq;
 
-        var gain = _ctx.createGain();
-        var t = _ctx.currentTime + i * 0.25;
+        var gain = ctx.createGain();
+        var t    = ctx.currentTime + i * 0.22;
         gain.gain.setValueAtTime(0, t);
-        gain.gain.linearRampToValueAtTime(0.35, t + 0.05);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.23);
+        gain.gain.linearRampToValueAtTime(0.32, t + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
 
         osc.connect(gain);
-        gain.connect(_ctx.destination);
+        gain.connect(ctx.destination);
         osc.start(t);
-        osc.stop(t + 0.25);
+        osc.stop(t + 0.22);
       });
     } catch (e) {
-      console.warn('[ABYSS.Audio] playMissionSuccess failed:', e);
+      console.warn('[SoundSystem] playVictory:', e);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
-  return {
-    init: init,
-    playOceanHum: playOceanHum,
-    playBubbleChirp: playBubbleChirp,
-    startBubbleLoop: startBubbleLoop,
-    stopBubbleLoop: stopBubbleLoop,
-    playSonarPing: playSonarPing,
-    playScanChime: playScanChime,
-    playMissionSuccess: playMissionSuccess
+  /* ─────────────────────────────────────────────────────────────────────────
+     PUBLIC API
+     ───────────────────────────────────────────────────────────────────────── */
+  window.SoundSystem = {
+    init:             init,
+    resume:           resume,
+    startOceanHum:    startOceanHum,
+    stopOceanHum:     stopOceanHum,
+    startBubbleLoop:  startBubbleLoop,
+    stopBubbleLoop:   stopBubbleLoop,
+    playSonarPing:    playSonarPing,
+    playScanChime:    playScanChime,
+    playVictory:      playVictory
   };
 
 }());

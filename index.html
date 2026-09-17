@@ -14,82 +14,70 @@
 
 <body>
 
-  <!-- Loading overlay -->
+  <!-- ══════════════════════════════════════════
+       LOADING SCREEN
+       ══════════════════════════════════════════ -->
   <div id="loadingOverlay">
-    <div class="spinner"></div>
-    INITIALIZING SYSTEMS...
+    <div class="ld-ring"></div>
+    <p class="ld-label">INITIALIZING SYSTEMS</p>
+    <p class="ld-sub">ABYSS MARINE EXPLORER v2</p>
   </div>
 
-  <!-- WebGL canvas -->
+  <!-- ══════════════════════════════════════════
+       CANVAS STACK
+       ══════════════════════════════════════════ -->
   <canvas id="vrCanvas"></canvas>
-
-  <!-- HUD overlay canvas (2D, transparent, pointer-events:none in CSS) -->
   <canvas id="hudCanvas"></canvas>
 
-  <!-- ═══════════════════════════════════════════════════════════
-       START / PERMISSION OVERLAY
-       ═══════════════════════════════════════════════════════════ -->
-  <div id="overlay" class="overlay">
+  <!-- ══════════════════════════════════════════
+       START / PERMISSION OVERLAY  (#overlay)
+       ══════════════════════════════════════════ -->
+  <div id="overlay">
     <canvas id="bgParticles"></canvas>
 
-    <div class="overlay-content">
-      <h1 class="title">ABYSS</h1>
-      <p class="subtitle">Marine Explorer</p>
+    <div class="menu-card">
+      <div class="menu-eyebrow">DEEP SEA MISSION</div>
+      <h1 class="menu-title">ABYSS</h1>
+      <p class="menu-sub">MARINE EXPLORER</p>
+      <div class="menu-divider"></div>
 
-      <div class="divider"></div>
-
-      <p class="instructions">
+      <p class="menu-brief">
         Descend into a living deep-sea ecosystem.<br>
         Scan five species, remove four pollution sources,<br>
         and unlock the research station before your oxygen runs out.
       </p>
 
       <div class="inst-grid">
-        <div class="inst-item">
-          <span>LOOK</span>
-          Tilt device or drag to explore
-        </div>
-        <div class="inst-item">
-          <span>INTERACT</span>
-          Gaze at objects for 2 seconds
-        </div>
-        <div class="inst-item">
-          <span>MOVE</span>
-          WASD / Arrow keys to swim
-        </div>
-        <div class="inst-item">
-          <span>OBJECTIVE</span>
-          5 Species · 4 Pollution · Station
-        </div>
+        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag or tilt device to explore</div>
+        <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 2 s</div>
+        <div class="inst-cell"><span class="inst-key">MOVE</span>WASD / Arrow keys</div>
+        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · station</div>
       </div>
 
-      <button id="diveBtn" class="dive-btn">▼ DIVE IN ▼</button>
+      <button id="diveBtn" class="cta-btn">▼ &nbsp;DIVE IN&nbsp; ▼</button>
     </div>
   </div>
 
-  <!-- ═══════════════════════════════════════════════════════════
-       MISSION COMPLETE / GAME OVER OVERLAY
-       ═══════════════════════════════════════════════════════════ -->
-  <div id="gameOverlay" class="overlay hidden">
-    <div class="overlay-content">
-      <h2 id="overlayTitle"></h2>
-      <p id="overlayMsg"></p>
-      <button id="restartBtn" class="dive-btn">↺ SURFACE</button>
+  <!-- ══════════════════════════════════════════
+       MISSION RESULT OVERLAY  (#endOverlay)
+       ══════════════════════════════════════════ -->
+  <div id="endOverlay" class="hidden">
+    <div class="menu-card end-card">
+      <div id="endEyebrow" class="menu-eyebrow"></div>
+      <h2 id="endTitle" class="end-title"></h2>
+      <p id="endMsg" class="end-msg"></p>
+      <button id="restartBtn" class="cta-btn">↺ &nbsp;SURFACE</button>
     </div>
   </div>
 
-  <!-- ═══════════════════════════════════════════════════════════
-       SCRIPTS — load in dependency order
-       ═══════════════════════════════════════════════════════════ -->
+  <!-- ══════════════════════════════════════════
+       SCRIPTS — dependency order
+       ══════════════════════════════════════════ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-
-  <!-- Global namespace guard — must come before any module -->
-  <script>window.ABYSS = {};</script>
-
   <script src="js/audio.js"></script>
-  <script src="js/environment.js"></script>
-  <script src="js/entities.js"></script>
   <script src="js/controls.js"></script>
+  <script src="js/entities.js"></script>
+  <script src="js/environment.js"></script>
   <script src="js/main.js"></script>
 
 </body>

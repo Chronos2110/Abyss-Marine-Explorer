@@ -1,102 +1,94 @@
-// =============================================================================
-// ABYSS: Marine Explorer — controls.js
-// Gyro, pointer drag, WASD locomotion. Exposed on window.ABYSS.Controls.
-// =============================================================================
+/* =============================================================================
+   ABYSS: Marine Explorer — js/controls.js
+   Gyro + pointer-drag look, WASD locomotion. Exposes window.InputController.
+   ============================================================================= */
 
-window.ABYSS = window.ABYSS || {};
-
-window.ABYSS.Controls = (function () {
+(function () {
   'use strict';
 
-  var _cameraRig = null;
-
-  // --- Look state ---
-  var _useGyro   = false;
-  var _isDragging = false;
-  var _lastX = 0, _lastY = 0;
-  var _rotY = 0, _rotX = 0.05;
-
-  // --- WASD key state ---
-  var _keys = {};
-  var SPEED  = 8.0; // units per second
+  /* ─── Config ──────────────────────────────────────────────────────────────── */
+  var SPEED  = 8.5;                       // units / second
   var BOUNDS = {
-    x: [-35,  35],
-    y: [-6.5,  6.0],
-    z: [-55,   5]
+    x: [-36,  36],
+    y: [-6.4,  7.0],
+    z: [-56,   6]
   };
 
-  // =============================================================================
-  // GYRO
-  // =============================================================================
+  /* ─── State ───────────────────────────────────────────────────────────────── */
+  var _rig       = null;
+  var _useGyro   = false;
+  var _drag      = false;
+  var _lastX     = 0;
+  var _lastY     = 0;
+  var _rotY      = 0;      // yaw   (radians)
+  var _rotX      = 0.04;  // pitch (radians)
+  var _keys      = {};
 
-  function _handleOrientation(evt) {
+  /* ─────────────────────────────────────────────────────────────────────────
+     GYRO — DeviceOrientationEvent → cameraRig quaternion
+     ───────────────────────────────────────────────────────────────────────── */
+  function _onDeviceOrientation(evt) {
     if (evt.alpha === null && evt.beta === null && evt.gamma === null) return;
     _useGyro = true;
 
-    var alphaRad = THREE.MathUtils.degToRad(evt.alpha || 0);
-    var betaRad  = THREE.MathUtils.degToRad(evt.beta  || 0);
-    var gammaRad = THREE.MathUtils.degToRad(evt.gamma || 0);
+    var aRad = THREE.MathUtils.degToRad(evt.alpha || 0);
+    var bRad = THREE.MathUtils.degToRad(evt.beta  || 0);
+    var gRad = THREE.MathUtils.degToRad(evt.gamma || 0);
 
-    var euler = new THREE.Euler(betaRad, alphaRad, -gammaRad, 'YXZ');
-    var q = new THREE.Quaternion().setFromEuler(euler);
+    var euler = new THREE.Euler(bRad, aRad, -gRad, 'YXZ');
+    var q     = new THREE.Quaternion().setFromEuler(euler);
+
+    // Portrait correction
     var q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
     q.multiply(q1);
 
-    var screenAngle = window.screen.orientation ? window.screen.orientation.angle : 0;
-    var q0 = new THREE.Quaternion().setFromAxisAngle(
+    // Screen orientation compensation
+    var screenDeg = (window.screen.orientation && window.screen.orientation.angle) || 0;
+    var qScreen   = new THREE.Quaternion().setFromAxisAngle(
       new THREE.Vector3(0, 0, 1),
-      -THREE.MathUtils.degToRad(screenAngle)
+      -THREE.MathUtils.degToRad(screenDeg)
     );
-    q.multiply(q0);
+    q.multiply(qScreen);
 
-    if (_cameraRig) _cameraRig.quaternion.copy(q);
+    if (_rig) _rig.quaternion.copy(q);
   }
 
-  // requestGyro — returns a Promise; resolves on grant, rejects on deny.
-  // Main.js calls this inside the DIVE IN click handler (user-gesture context).
-  function requestGyro() {
+  /* enableGyro — iOS 13+ requires requestPermission() from a user gesture */
+  function enableGyro(rig) {
+    _rig = rig;
     return new Promise(function (resolve, reject) {
       if (typeof DeviceOrientationEvent === 'undefined') {
-        reject(new Error('DeviceOrientationEvent not supported'));
-        return;
+        return reject(new Error('DeviceOrientationEvent not supported'));
       }
-
-      function attachListener() {
-        window.addEventListener('deviceorientation', _handleOrientation, true);
+      function attach() {
+        window.addEventListener('deviceorientation', _onDeviceOrientation, true);
         resolve();
       }
-
       if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS 13+ requires explicit permission
         DeviceOrientationEvent.requestPermission()
           .then(function (state) {
-            if (state === 'granted') {
-              attachListener();
-            } else {
-              reject(new Error('Gyro permission denied'));
-            }
+            if (state === 'granted') attach();
+            else reject(new Error('Gyro permission denied'));
           })
           .catch(reject);
       } else {
-        // Non-iOS — attach directly
-        attachListener();
+        attach();
       }
     });
   }
 
-  // =============================================================================
-  // POINTER (drag-to-look)
-  // Listeners attached to window so the HUD canvas overlay doesn't block events.
-  // =============================================================================
-
+  /* ─────────────────────────────────────────────────────────────────────────
+     POINTER DRAG — smooth pitch / yaw mouse look
+     Attached to window (not canvas) so HUD overlay doesn't block events.
+     ───────────────────────────────────────────────────────────────────────── */
   function _onPointerDown(e) {
-    _isDragging = true;
+    _drag  = true;
     _lastX = e.clientX;
     _lastY = e.clientY;
   }
 
   function _onPointerMove(e) {
-    if (!_isDragging || _useGyro) return;
+    if (!_drag || _useGyro) return;
     var dx = e.clientX - _lastX;
     var dy = e.clientY - _lastY;
     _lastX = e.clientX;
@@ -104,57 +96,48 @@ window.ABYSS.Controls = (function () {
 
     _rotY -= dx * 0.003;
     _rotX -= dy * 0.003;
-    _rotX = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, _rotX));
+    // Clamp pitch so orientation never flips
+    _rotX = Math.max(-Math.PI / 2.05, Math.min(Math.PI / 2.05, _rotX));
 
-    if (_cameraRig) {
-      _cameraRig.quaternion.setFromEuler(new THREE.Euler(_rotX, _rotY, 0, 'YXZ'));
+    if (_rig) {
+      _rig.quaternion.setFromEuler(new THREE.Euler(_rotX, _rotY, 0, 'YXZ'));
     }
   }
 
-  function _onPointerUp() {
-    _isDragging = false;
-  }
+  function _onPointerUp() { _drag = false; }
 
-  // =============================================================================
-  // KEYBOARD (WASD + Arrow keys)
-  // =============================================================================
-
+  /* ─────────────────────────────────────────────────────────────────────────
+     KEYBOARD — WASD + Arrow keys
+     ───────────────────────────────────────────────────────────────────────── */
   function _onKeyDown(e) { _keys[e.code] = true; }
   function _onKeyUp(e)   { _keys[e.code] = false; }
 
-  // =============================================================================
-  // init — attach all listeners, store rig reference
-  // =============================================================================
+  /* ─────────────────────────────────────────────────────────────────────────
+     INIT — attach all event listeners
+     ───────────────────────────────────────────────────────────────────────── */
+  function init(rig) {
+    _rig   = rig;
+    _drag  = false;
+    _useGyro = false;
+    _rotY  = 0;
+    _rotX  = 0.04;
+    _keys  = {};
 
-  function init(cameraRig) {
-    _cameraRig = cameraRig;
-    _useGyro   = false;
-    _isDragging = false;
-    _rotY = 0;
-    _rotX = 0.05;
-    _keys = {};
-
-    // Pointer on window (not canvas) — overlay canvas has pointer-events:none
     window.addEventListener('pointerdown', _onPointerDown);
     window.addEventListener('pointermove', _onPointerMove);
     window.addEventListener('pointerup',   _onPointerUp);
-
-    // WASD
-    window.addEventListener('keydown', _onKeyDown);
-    window.addEventListener('keyup',   _onKeyUp);
+    window.addEventListener('keydown',     _onKeyDown);
+    window.addEventListener('keyup',       _onKeyUp);
   }
 
-  // =============================================================================
-  // update — apply WASD velocity to rig, enforce bounds
-  // Called every frame from main.js with real delta time (seconds).
-  // =============================================================================
-
+  /* ─────────────────────────────────────────────────────────────────────────
+     UPDATE — apply WASD velocity each frame
+     Movement direction rotated by rig Y-axis only (no pitch tilt on translate)
+     ───────────────────────────────────────────────────────────────────────── */
   function update(delta) {
-    if (!_cameraRig) return;
+    if (!_rig) return;
 
-    // Build movement direction in rig-local space
     var dir = new THREE.Vector3(0, 0, 0);
-
     if (_keys['KeyW']     || _keys['ArrowUp'])    dir.z -= 1;
     if (_keys['KeyS']     || _keys['ArrowDown'])  dir.z += 1;
     if (_keys['KeyA']     || _keys['ArrowLeft'])  dir.x -= 1;
@@ -163,48 +146,39 @@ window.ABYSS.Controls = (function () {
     if (dir.lengthSq() > 0) {
       dir.normalize().multiplyScalar(SPEED * delta);
 
-      // Rotate by Y-axis only (no pitch applied to translation)
-      var yaw = new THREE.Euler(0, _cameraRig.rotation.y, 0, 'YXZ');
-      dir.applyEuler(yaw);
+      var yawEuler = new THREE.Euler(0, _rig.rotation.y, 0, 'YXZ');
+      dir.applyEuler(yawEuler);
+      _rig.position.add(dir);
 
-      _cameraRig.position.add(dir);
-
-      // Enforce bounds
-      _cameraRig.position.x = THREE.MathUtils.clamp(
-        _cameraRig.position.x, BOUNDS.x[0], BOUNDS.x[1]
-      );
-      _cameraRig.position.y = THREE.MathUtils.clamp(
-        _cameraRig.position.y, BOUNDS.y[0], BOUNDS.y[1]
-      );
-      _cameraRig.position.z = THREE.MathUtils.clamp(
-        _cameraRig.position.z, BOUNDS.z[0], BOUNDS.z[1]
-      );
+      _rig.position.x = THREE.MathUtils.clamp(_rig.position.x, BOUNDS.x[0], BOUNDS.x[1]);
+      _rig.position.y = THREE.MathUtils.clamp(_rig.position.y, BOUNDS.y[0], BOUNDS.y[1]);
+      _rig.position.z = THREE.MathUtils.clamp(_rig.position.z, BOUNDS.z[0], BOUNDS.z[1]);
     }
   }
 
-  // =============================================================================
-  // Helpers for main.js to read internal state on reset
-  // =============================================================================
-
-  function resetOrientation() {
+  /* ─────────────────────────────────────────────────────────────────────────
+     RESET — called between game sessions
+     ───────────────────────────────────────────────────────────────────────── */
+  function reset() {
     _useGyro = false;
-    _isDragging = false;
-    _rotY = 0;
-    _rotX = 0.05;
-    if (_cameraRig) {
-      _cameraRig.quaternion.setFromEuler(new THREE.Euler(0.05, 0, 0, 'YXZ'));
+    _drag    = false;
+    _rotY    = 0;
+    _rotX    = 0.04;
+    _keys    = {};
+    if (_rig) {
+      _rig.quaternion.setFromEuler(new THREE.Euler(0.04, 0, 0, 'YXZ'));
+      _rig.position.set(0, 0, 0);
     }
   }
 
-  // =============================================================================
-  // Public API
-  // =============================================================================
-
-  return {
-    init:             init,
-    update:           update,
-    requestGyro:      requestGyro,
-    resetOrientation: resetOrientation
+  /* ─────────────────────────────────────────────────────────────────────────
+     PUBLIC API
+     ───────────────────────────────────────────────────────────────────────── */
+  window.InputController = {
+    init:       init,
+    update:     update,
+    reset:      reset,
+    enableGyro: enableGyro
   };
 
 }());
