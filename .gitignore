@@ -1,4 +1,4 @@
-.agent/
-.vscode/
+node_modules/
+dist/
+.DS_Store
 *.log
-.DS_store

@@ -1,85 +1,74 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="description"
-    content="ABYSS: Marine Explorer — Immersive side-by-side VR underwater exploration. Scan marine life, collect pollution, unlock the research station.">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>ABYSS: Marine Explorer</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
-
 <body>
-
-  <!-- ══════════════════════════════════════════
-       LOADING SCREEN
-       ══════════════════════════════════════════ -->
-  <div id="loadingOverlay">
-    <div class="ld-ring"></div>
-    <p class="ld-label">INITIALIZING SYSTEMS</p>
-    <p class="ld-sub">ABYSS MARINE EXPLORER v2</p>
-  </div>
-
-  <!-- ══════════════════════════════════════════
-       CANVAS STACK
-       ══════════════════════════════════════════ -->
+  <!-- WebGL Render Canvas -->
   <canvas id="vrCanvas"></canvas>
+  
+  <!-- 2D HUD Canvas (Renders dual HUD for SBS or single HUD for Normal) -->
   <canvas id="hudCanvas"></canvas>
 
-  <!-- ══════════════════════════════════════════
-       START / PERMISSION OVERLAY  (#overlay)
-       ══════════════════════════════════════════ -->
-  <div id="overlay">
-    <canvas id="bgParticles"></canvas>
-
+  <!-- MAIN MENU OVERLAY -->
+  <div id="mainMenu" class="overlay">
     <div class="menu-card">
-      <div class="menu-eyebrow">DEEP SEA MISSION</div>
-      <h1 class="menu-title">ABYSS</h1>
-      <p class="menu-sub">MARINE EXPLORER</p>
-      <div class="menu-divider"></div>
-
-      <p class="menu-brief">
-        Descend into a living deep-sea ecosystem.<br>
-        Scan five species, remove four pollution sources,<br>
-        and unlock the research station before your oxygen runs out.
-      </p>
-
-      <div class="inst-grid">
-        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag or tilt device to explore</div>
-        <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 2 s</div>
-        <div class="inst-cell"><span class="inst-key">MOVE</span>WASD / Arrow keys</div>
-        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · station</div>
+      <h1 class="glow-title">ABYSS</h1>
+      <p class="subtitle">SAVE THE BLUE — MARINE EXPLORER</p>
+      
+      <div class="button-group">
+        <button id="btnStartNormal" class="btn primary">START DIVE (NORMAL)</button>
+        <button id="btnStartSBS" class="btn primary glowing">START DIVE (SBS VR)</button>
+        <button id="btnMarineLog" class="btn secondary">MARINE LOG</button>
+        <button id="btnSettings" class="btn secondary">SETTINGS</button>
       </div>
 
-      <button id="diveBtn" class="cta-btn">▼ &nbsp;DIVE IN&nbsp; ▼</button>
+      <div class="controls-hint">
+        <p><b>Movement:</b> Hold Touch Screen / WASD to Swim</p>
+        <p><b>VR Mode:</b> Insert into Cardboard/VR headset & tilt head to look</p>
+      </div>
     </div>
   </div>
 
-  <!-- ══════════════════════════════════════════
-       MISSION RESULT OVERLAY  (#endOverlay)
-       ══════════════════════════════════════════ -->
-  <div id="endOverlay" class="hidden">
-    <div class="menu-card end-card">
-      <div id="endEyebrow" class="menu-eyebrow"></div>
-      <h2 id="endTitle" class="end-title"></h2>
-      <p id="endMsg" class="end-msg"></p>
-      <button id="restartBtn" class="cta-btn">↺ &nbsp;SURFACE</button>
+  <!-- MARINE LOG MODAL -->
+  <div id="marineLogModal" class="overlay hidden">
+    <div class="menu-card wide">
+      <h2>DEFENSE & MARINE LOG</h2>
+      <div id="logList" class="log-grid">
+        <!-- Dynamically populated -->
+      </div>
+      <button id="btnCloseLog" class="btn secondary">BACK TO MENU</button>
     </div>
   </div>
 
-  <!-- ══════════════════════════════════════════
-       SCRIPTS — dependency order
-       ══════════════════════════════════════════ -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="js/audio.js"></script>
-  <script src="js/controls.js"></script>
-  <script src="js/entities.js"></script>
-  <script src="js/environment.js"></script>
-  <script src="js/main.js"></script>
+  <!-- SETTINGS MODAL -->
+  <div id="settingsModal" class="overlay hidden">
+    <div class="menu-card">
+      <h2>SETTINGS</h2>
+      <div class="setting-item">
+        <label for="sensRange">Gyro Sensitivity</label>
+        <input type="range" id="sensRange" min="0.5" max="2.0" step="0.1" value="1.0">
+      </div>
+      <div class="setting-item">
+        <label for="swimSpeedRange">Swim Speed</label>
+        <input type="range" id="swimSpeedRange" min="2" max="10" step="1" value="5">
+      </div>
+      <button id="btnCloseSettings" class="btn secondary">SAVE & CLOSE</button>
+    </div>
+  </div>
 
+  <!-- GAME END OVERLAY -->
+  <div id="gameEndOverlay" class="overlay hidden">
+    <div class="menu-card">
+      <h1 id="endTitle" class="glow-title">MISSION COMPLETE</h1>
+      <p id="endMessage" class="subtitle"></p>
+      <button id="btnRestart" class="btn primary">MAIN MENU</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
 </body>
-
 </html>
