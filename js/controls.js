@@ -1,23 +1,23 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/controls.js  v7
+   ABYSS: Marine Explorer — js/controls.js  v8
    1:1 Head Steering & Landscape Gyroscope Pipeline
-   
+
    CRITICAL RUNTIME ARCHITECTURE:
    - Controls.init(cameraRig, pitchObject, cameraL):
      cameraL reference stored at module scope exclusively for direction sampling.
    - Module-scoped allocations (Zero Runtime Allocation Rule):
      _lookDir, _flatDir, _euler, _q0, _q1, _qFinal, _forwardVec allocated once.
    - Locomotion Zones (Y-component thresholds on normalized _lookDir):
-       HOVERING  : _lookDir.y >= -0.20 && _lookDir.y <=  0.28 → velocity lerps to 0
-       SWIMMING  : _lookDir.y <  -0.20 && _lookDir.y >= -0.68 → forward thrust along XZ
-       DIVING    : _lookDir.y <  -0.68                         → downward Y thrust, reduced XZ
-       ASCENDING : _lookDir.y >   0.28                         → upward Y thrust, reduced XZ
+       HOVERING  : _lookDir.y >= -0.20 && _lookDir.y <=  0.30 → velocity lerps to 0
+       SWIMMING  : _lookDir.y <  -0.20 && _lookDir.y >= -0.65 → forward thrust along XZ
+       DIVING    : _lookDir.y <  -0.70                         → downward Y thrust, reduced XZ
+       ASCENDING : _lookDir.y >   0.30                         → upward Y thrust, reduced XZ
    - Forward heading extracted via XZ-projection (_flatDir) — no Y bleed into horizontal thrust.
    - Vertical velocity lerped separately and independently.
    - Position clamped to: X [-40, 40], Y [-7, 8], Z [-60, 10].
    - Gyroscope Pipeline:
-       W3C YXZ device frame → Right-multiply _q1 (-90° X) →
-       Left-multiply _q0 (screen orientation angle) → cameraRig.quaternion.
+       W3C YXZ device frame → Right-multiply _q1 (-90° X premultiply) →
+       Left-multiply _q0 (screen orientation angle, dynamic per event) → cameraRig.quaternion.
        pitchObject is bypassed and zeroed out.
    - Touch lockout: pointermove and pointerdown are strict no-ops when gyroActive === true.
    ============================================================================= */
@@ -237,32 +237,34 @@ window.ABYSS = window.ABYSS || {};
     }
 
     /* ── 3. Locomotion zones based on _lookDir.y ──
-       HOVERING  : >= -0.20 && <= 0.28 → all velocity lerps to 0
-       SWIMMING  : <  -0.20 && >= -0.68 → forward thrust along XZ heading
-       DIVING    : <  -0.68             → downward Y thrust, reduced XZ
-       ASCENDING : >   0.28             → upward Y thrust, reduced XZ
+       HOVERING  : >= -0.20 && <= 0.30 → all velocity lerps to 0
+       SWIMMING  : <  -0.20 && >= -0.65 → forward thrust along XZ heading
+       DIVING    : <  -0.70             → downward Y thrust, reduced XZ
+       ASCENDING : >   0.30             → upward Y thrust, reduced XZ
     ── */
     var targetSwimSpeed = 0;
 
-    if (_lookDir.y > 0.28) {
-      // ASCENDING
+    if (_lookDir.y > 0.30) {
+      // ASCENDING — looking up beyond 0.30 Y
       swimState = 'ASCENDING';
-      targetSwimSpeed = 1.5; // reduced XZ
+      targetSwimSpeed = 1.5; // reduced XZ while ascending
       velocity.y = THREE.MathUtils.lerp(velocity.y, 2.8, delta * 4.0);
-    } else if (_lookDir.y < -0.68) {
-      // DIVING
+    } else if (_lookDir.y < -0.70) {
+      // DIVING — steep downward gaze below -0.70 Y
       swimState = 'DIVING';
-      targetSwimSpeed = 1.8; // reduced XZ
+      targetSwimSpeed = 1.8; // reduced XZ while diving
       velocity.y = THREE.MathUtils.lerp(velocity.y, -2.5, delta * 4.0);
     } else if (_lookDir.y < -0.20) {
-      // SWIMMING (forward thrust along XZ heading, neutral vertical)
+      // SWIMMING — gaze in [-0.20, -0.65]: forward thrust along XZ heading
+      // (values between -0.65 and -0.70 are a dead-band: SWIMMING at full speed,
+      //  not yet triggering the DIVING downward thrust)
       swimState = 'SWIMMING';
-      // t: 0 at boundary (-0.20), 1 at full swim (-0.68)
-      var t = Math.min(1.0, (_lookDir.y + 0.20) / -0.48);
+      // t: 0 at upper boundary (-0.20), 1 at lower boundary (-0.65)
+      var t = Math.min(1.0, (_lookDir.y + 0.20) / -0.45);
       targetSwimSpeed = THREE.MathUtils.lerp(0, 6.5, t);
       velocity.y = THREE.MathUtils.lerp(velocity.y, 0.0, delta * 4.0);
     } else {
-      // HOVERING (-0.20 <= _lookDir.y <= 0.28)
+      // HOVERING — looking straight ahead: -0.20 <= _lookDir.y <= 0.30
       swimState = 'HOVERING';
       targetSwimSpeed = 0.0;
       velocity.y = THREE.MathUtils.lerp(velocity.y, 0.0, delta * 4.0);
@@ -287,7 +289,7 @@ window.ABYSS = window.ABYSS || {};
     velocity.x = _flatDir.x * currentSwimSpeed;
     velocity.z = _flatDir.z * currentSwimSpeed;
 
-    // Zero out velocity when hovering and nearly stopped
+    // Zero out velocity when hovering and nearly stopped (clean halt, no drift)
     if (swimState === 'HOVERING' && currentSwimSpeed === 0 && Math.abs(velocity.y) < 0.008) {
       velocity.set(0, 0, 0);
     }
