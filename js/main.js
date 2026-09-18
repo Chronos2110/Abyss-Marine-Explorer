@@ -1,5 +1,5 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/main.js  v4
+   ABYSS: Marine Explorer — js/main.js  v5
    MODULE 4: Game Loop, Oxygen & Canvas 2D Dual HUD.
    Orchestrator: stereoscopic renderer, dive torch, gaze/dwell system,
    hudCanvas 2D HUD, mission state machine, O₂/depth/swim-state systems.
@@ -157,11 +157,14 @@ window.ABYSS = window.ABYSS || {};
     _updateCameraAspect();
     _rig.position.set(0, 0, 0);
 
-    // Update camera world matrices before Controls reads direction from cameraL
+    // Force world matrices so Controls.init → cameraL.getWorldDirection() is valid
+    // on the very first frame before the game loop begins.
     _camL.updateMatrixWorld();
     _camR.updateMatrixWorld();
 
-    // Pass cameraL as third argument — required for getWorldDirection()
+    // Init controls — MUST pass cameraL as third arg.
+    // cameraL.getWorldDirection() is the sole source of head steering direction.
+    // pitchObject is zeroed by the gyro pipeline; never apply rotation to it externally.
     if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
       window.ABYSS.Controls.init(_rig, _pitchObj, _camL);
     }
