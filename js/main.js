@@ -40,11 +40,29 @@ window.ABYSS = window.ABYSS || {};
   // HUD canvas
   var _hud, _hctx;
 
-  // O₂ system — 180s baseline, 2× drain when shark within 12u
+  // O₂ system — 180s baseline; drain scales with depth, scan lock, shark
   var _oxygen        = 180;
   var OXYGEN_SECS    = 180;
-  var O2_DRAIN_BASE  = 1.0;   // units/sec
-  var O2_DRAIN_SHARK = 2.0;   // units/sec when _sharkNear
+  // ── TUNE: drain constants ─────────────────────────────────────────────────
+  // Worst-case math (max-depth + shark + scanning):
+  //   O2_DRAIN_BASE × (1 + O2_DEPTH_EXTRA) × O2_SHARK_MULT + O2_DRAIN_SCAN
+  //   = 0.50 × 1.30 × 1.50 + 0.15  ≈ 1.13 u/s  → ~160 s on a full tank
+  var O2_DRAIN_BASE  = 0.50;  // TUNE: units/sec at surface (was 0.85) — range 0.35–0.75
+  var O2_DEPTH_EXTRA = 0.30;  // TUNE: extra fraction at max depth (was 0.45) — range 0.15–0.50
+  var O2_DRAIN_SCAN  = 0.15;  // TUNE: extra u/s while dwelling (was 0.30) — range 0.0–0.25
+  var O2_SHARK_MULT  = 1.50;  // TUNE: panic multiplier when shark near (was 1.75) — max 1.5 per spec
+
+  // Scanner — uniform 3D radius + hysteresis (prevents edge flicker)
+  // TUNE: SCAN_RADIUS governs raycaster far-clip and interaction range.
+  // TUNE: SCAN_HYSTERESIS adds a soft outer band so contacts don't flicker at the edge.
+  var SCAN_RADIUS      = 22;   // TUNE: interaction/gaze-lock radius (world units) — range 18–30
+  var SCAN_HYSTERESIS  = 3;    // TUNE: hysteresis band width — range 2–5
+  var _scanLock        = false;
+  var _scanFalloff     = 0;
+
+  // Radar — separate range so the minimap shows the broader environment
+  var RADAR_RANGE      = 60;   // TUNE: radar visibility radius (world units) — range 40–90
+
 
   // Mission counters
   var _speciesScanned  = 0;     // 0..5
@@ -55,12 +73,17 @@ window.ABYSS = window.ABYSS || {};
   var _specimensDone   = 0;     // specimens deposited into SPECIMEN_DEPOSIT
   var _wasteDone       = false; // WASTE_DISPOSAL hatch opened
 
-  // Gaze / dwell — 2.0s required
+  // Gaze / dwell system
+  // ── TUNE: dwell constants ─────────────────────────────────────────────────
+  var GAZE_REQ      = 1.5;   // TUNE: seconds of dwell to complete a scan (was 2.0) — range 1.0–3.0
+  var GAZE_GRACE    = 0.65;  // TUNE: seconds of lock retention after gaze leaves target — range 0.3–1.0
+                             //       Prevents fast-moving animals from resetting the bar on 1-frame escapes.
   var _gazeTarget   = null;
   var _gazeTime     = 0;
   var _gazeProgress = 0;
-  var GAZE_REQ      = 2.0;   // seconds dwell required
+  var _gazeLostTime = 0;     // seconds since gaze last left the target (0 = on target)
   var _interactables = [];
+
 
   // Dive torch
   var _torch       = null;
@@ -127,18 +150,23 @@ window.ABYSS = window.ABYSS || {};
 
     var canvas = document.getElementById('vrCanvas');
     _renderer  = new THREE.WebGLRenderer({
-      canvas:           canvas,
-      antialias:        false,
-      powerPreference:  'high-performance'
+      canvas:                canvas,
+      antialias:             false,
+      powerPreference:       'high-performance',
+      preserveDrawingBuffer: false
     });
-    _renderer.autoClear          = false;
-    _renderer.shadowMap.enabled  = false;
+    _renderer.autoClear         = false;
+    _renderer.shadowMap.enabled = false;
+    _renderer.setClearColor(0x041a2e, 1);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     _renderer.setSize(_W, _H);
 
     _clock     = new THREE.Clock();
     _raycaster = new THREE.Raycaster();
-    _raycaster.far = 60;
+    // TUNE: raycaster far = SCAN_RADIUS * 1.5 (was SCAN_RADIUS + SCAN_HYSTERESIS = 25u).
+    // Extended so fast entities that briefly dart beyond the nominal radius still register.
+    _raycaster.far = SCAN_RADIUS * 1.5;
+
 
     _rig      = new THREE.Group();
     _pitchObj = new THREE.Group();
@@ -156,15 +184,6 @@ window.ABYSS = window.ABYSS || {};
 
     _updateCameraAspect();
     _rig.position.set(0, 0, 0);
-
-    // Update camera world matrices before Controls reads direction from cameraL
-    _camL.updateMatrixWorld();
-    _camR.updateMatrixWorld();
-
-    // Pass cameraL as third argument — required for getWorldDirection()
-    if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
-      window.ABYSS.Controls.init(_rig, _pitchObj, _camL);
-    }
   }
 
   function _updateCameraAspect() {
@@ -361,10 +380,11 @@ window.ABYSS = window.ABYSS || {};
     /* ─── CENTER: DWELL RETICLE + GAZE ARC ───────────────────── */
     var rR = Math.round(eyeW * 0.030);
 
-    // Outer static ring — brightens when gazing at interactive target
-    ctx.strokeStyle = _gazeProgress > 0 ? '#00ffcc' : 'rgba(255,255,255,0.5)';
-    ctx.lineWidth   = _gazeProgress > 0 ? 2.5 : 1.5;
-    if (_gazeProgress > 0) { ctx.shadowBlur = 14; ctx.shadowColor = '#00ffcc'; }
+    // Outer static ring — brightens with scan-lock falloff (no edge flicker)
+    var ringA = 0.45 + 0.55 * _scanFalloff;
+    ctx.strokeStyle = _gazeProgress > 0 ? '#00ffcc' : 'rgba(255,255,255,' + ringA + ')';
+    ctx.lineWidth   = _gazeProgress > 0 ? 2.5 : (1.4 + _scanFalloff);
+    if (_gazeProgress > 0 || _scanFalloff > 0.35) { ctx.shadowBlur = 14; ctx.shadowColor = '#00ffcc'; }
     ctx.beginPath();
     ctx.arc(cx, cy, rR, 0, Math.PI * 2);
     ctx.stroke();
@@ -474,12 +494,151 @@ window.ABYSS = window.ABYSS || {};
       ctx.fillStyle = col;
       ctx.fillText(icon + ' ' + m.label + '  ' + m.count, mX, lineY);
     });
+
+    _drawRadar(ctx, ox, eyeW, eyeH);
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
-     _drawHUDFrame — clear full canvas + render both eye viewports
+     Bottom-CENTER sonar radar — blips in player-relative XZ, both eyes.
+     Coordinate space: XZ only (Y is depth — not mapped to 2D radar).
+     Soft alpha falloff near RADAR_RANGE edge so contacts don't pop.
+     Player rendered as a small forward-direction arrow at radar centre.
+  ───────────────────────────────────────────────────────────────────────── */
+  function _drawRadar(ctx, ox, eyeW, eyeH) {
+    var rigPos = (window.ABYSS && window.ABYSS._rigPosition) ? ABYSS._rigPosition : null;
+    if (!rigPos) return;
+
+    var yaw = (window.ABYSS && typeof ABYSS._rigYaw === 'number') ? ABYSS._rigYaw : 0;
+    var contacts = (window.ABYSS && window.ABYSS.EntityManager &&
+                    ABYSS.EntityManager.getRadarContacts)
+      ? ABYSS.EntityManager.getRadarContacts() : [];
+
+    // ── Layout ────────────────────────────────────────────────────────────
+    // TUNE: size multiplier 0.26 → larger radar; range 0.20–0.32
+    var size = Math.round(Math.min(eyeW, eyeH) * 0.26);
+    var rad  = size * 0.42;
+    // Bottom-CENTER of each eye viewport
+    var cx   = ox + eyeW / 2;
+    var cy   = eyeH - rad - 20;
+
+    ctx.save();
+
+    // ── Background disc ───────────────────────────────────────────────────
+    ctx.fillStyle = 'rgba(0, 8, 18, 0.68)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad + 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── Outer ring + mid ring ─────────────────────────────────────────────
+    ctx.strokeStyle = 'rgba(0,255,204,0.38)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad * 0.5, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // ── Cross-hair lines ──────────────────────────────────────────────────
+    ctx.strokeStyle = 'rgba(0,255,204,0.18)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(cx - rad, cy); ctx.lineTo(cx + rad, cy);
+    ctx.moveTo(cx, cy - rad); ctx.lineTo(cx, cy + rad);
+    ctx.stroke();
+
+    // ── Rotating sonar sweep line ─────────────────────────────────────────
+    var t = _clock.getElapsedTime();
+    var sweep = (t * 1.4) % (Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,255,204,0.25)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.sin(sweep) * rad, cy - Math.cos(sweep) * rad);
+    ctx.stroke();
+
+    // ── Blips — world-space XZ mapped to radar, yaw-rotated ──────────────
+    // TUNE: RADAR_RANGE defines how many world units map to the radar edge.
+    var range  = RADAR_RANGE;
+    var cosY   = Math.cos(yaw);
+    var sinY   = Math.sin(yaw);
+    // Soft-falloff starts at inner 85% of radar range to prevent edge pop
+    var fadeStart = range * 0.85;
+
+    for (var i = 0; i < contacts.length; i++) {
+      var c  = contacts[i];
+      var dx = c.x - rigPos.x;
+      var dz = c.z - rigPos.z;
+      // XZ-only distance for radar (depth/Y is ignored — shown as depth meter)
+      var dist2D = Math.hypot(dx, dz);
+      if (dist2D > range) continue;           // outside radar range — skip
+
+      // Rotate relative vector by player yaw so "up on radar = forward"
+      var lx =  dx * cosY - dz * sinY;
+      var lz =  dx * sinY + dz * cosY;
+      var px = cx + (lx / range) * rad;
+      var pz = cy + (lz / range) * rad;       // note: Z maps to screen-Y
+
+      // Alpha falloff near edge — smooth contact appearance
+      var fall = 1 - Math.max(0, Math.min(1, (dist2D - fadeStart) / (range - fadeStart)));
+
+      var col;
+      if (c.kind === 'shark') {
+        col = 'rgba(255,60,60,'   + (0.6 + 0.4 * fall) + ')';
+      } else if (c.kind === 'pollution') {
+        col = 'rgba(255,170,0,'   + (0.5 + 0.5 * fall) + ')';
+      } else if (c.kind === 'terminal' || c.kind === 'station') {
+        col = 'rgba(80,180,255,'  + (0.5 + 0.5 * fall) + ')';
+      } else {
+        // fauna: cyan if unscanned, green if already scanned
+        col = c.scanned
+          ? 'rgba(0,255,136,' + (0.4 + 0.5 * fall) + ')'
+          : 'rgba(0,255,204,' + (0.55 + 0.45 * fall) + ')';
+      }
+
+      var blipR = c.kind === 'shark' ? 3.4 : 2.4;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(px, pz, blipR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Player arrow — points in the rig's forward direction ─────────────
+    // Arrow tip always points to the top of the radar (forward = screen-up).
+    // The world is already rotated by yaw above, so player arrow is fixed north.
+    var aLen = rad * 0.14;   // TUNE: arrow length fraction of radar radius
+    var aWid = rad * 0.07;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = 'rgba(0,255,204,0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx,           cy - aLen);          // tip  (forward / north)
+    ctx.lineTo(cx + aWid,    cy + aLen * 0.5);    // right base
+    ctx.lineTo(cx - aWid,    cy + aLen * 0.5);    // left base
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // ── Label ────────────────────────────────────────────────────────────
+    ctx.font = 'bold ' + Math.max(7, Math.round(eyeW * 0.011)) + 'px "Share Tech Mono",monospace';
+    ctx.fillStyle = 'rgba(0,255,204,0.50)';
+    ctx.textAlign = 'center';
+    ctx.fillText('SONAR', cx, cy + rad + 13);
+
+    ctx.restore();
+  }
+
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     _drawHUDFrame — clear full canvas + render both eye viewports.
+     FIX (Task 1 — ghosting): each eye pass is isolated with ctx.save() /
+     ctx.restore() so accumulated canvas state (shadowBlur, lineWidth,
+     fillStyle, textAlign, font) from the left-eye draw cannot bleed into
+     the right-eye draw and produce a static duplicate artifact.
   ───────────────────────────────────────────────────────────────────────── */
   function _drawHUDFrame() {
+    // Always clear first — prevents stale pixels from prior frames or
+    // resize events accumulating on the HUD layer.
     _hctx.clearRect(0, 0, _hud.width, _hud.height);
 
     if (_state === STATE.DEAD) {
@@ -494,40 +653,57 @@ window.ABYSS = window.ABYSS || {};
 
     if (_state !== STATE.PLAYING && _state !== STATE.SUCCESS) return;
 
-    // Left eye
+    // Left eye — isolated canvas state
+    _hctx.save();
     _drawEyeHUD(_hctx, 0,      _W / 2, _H);
-    // Right eye
-    _drawEyeHUD(_hctx, _W / 2, _W / 2, _H);
+    _hctx.restore();
 
-    // Centre nose-bridge separator
+    // Right eye — isolated canvas state (no bleed from left-eye pass)
+    _hctx.save();
+    _drawEyeHUD(_hctx, _W / 2, _W / 2, _H);
+    _hctx.restore();
+
+    // Centre nose-bridge separator — explicit state, not inherited
+    _hctx.save();
     _hctx.strokeStyle = 'rgba(0,255,204,0.08)';
     _hctx.lineWidth   = 1;
+    _hctx.shadowBlur  = 0;
     _hctx.beginPath();
     _hctx.moveTo(_W / 2, 0);
     _hctx.lineTo(_W / 2, _H);
     _hctx.stroke();
+    _hctx.restore();
   }
+
 
   /* ─────────────────────────────────────────────────────────────────────────
      SCISSOR RENDER — side-by-side stereoscopic pass
-     renderer.autoClear=false → clear once, two scissor/viewport passes.
+     autoClear=false: disable scissor, full-buffer clear, then per-eye scissor
+     clear+render so leftover fragments cannot ghost in the other eye.
   ───────────────────────────────────────────────────────────────────────── */
   function _render() {
-    var halfW = Math.floor(_W / 2);
-    _renderer.clear();
+    var halfW  = Math.floor(_W / 2);
+    var rightW = _W - halfW;
+
+    // gl.clear() is scissored. Disable scissor and wipe the whole buffer
+    // or the previous eye's half keeps last-frame pixels ("one moves, one stays").
+    _renderer.setScissorTest(false);
+    _renderer.setViewport(0, 0, _W, _H);
+    _renderer.clear(true, true, true);
 
     _renderer.setScissorTest(true);
 
-    // Left eye
     _renderer.setScissor(0, 0, halfW, _H);
     _renderer.setViewport(0, 0, halfW, _H);
+    _renderer.clear(true, true, true);
     _renderer.render(_scene, _camL);
 
-    // Right eye
-    _renderer.setScissor(halfW, 0, halfW, _H);
-    _renderer.setViewport(halfW, 0, halfW, _H);
+    _renderer.setScissor(halfW, 0, rightW, _H);
+    _renderer.setViewport(halfW, 0, rightW, _H);
+    _renderer.clear(true, true, true);
     _renderer.render(_scene, _camR);
 
+    _renderer.setScissorTest(false);
     _drawHUDFrame();
   }
 
@@ -759,8 +935,20 @@ window.ABYSS = window.ABYSS || {};
      Raycasts from left camera center. Builds the interactable candidate list
      from EntityManager.getInteractables() with fallback to _interactables.
      Filters already-completed entities. Accumulates gazeTime and fires
-     _commitInteraction at the 2.0s dwell mark. Resets arc immediately on
-     gaze leave — no DOM mutation.
+     _commitInteraction at GAZE_REQ seconds of cumulative dwell.
+
+     STICKY TARGETING (grace buffer):
+       _gazeLostTime counts up while no valid hit is found.
+       Progress is NOT reset until _gazeLostTime exceeds GAZE_GRACE (0.65 s).
+       This prevents fast-moving animals from clearing the scan bar on a single
+       frame where they briefly dart outside the reticle or detection range.
+
+     HIT RESOLVER (improved):
+       1. Direct userData.faunaGroup / userData.terminalGroup pointer (fastest).
+       2. Ancestor walk-up checking faunaGroup/terminalGroup at every level.
+       3. Final walk-to-scene-root fallback for any typed group.
+       This catches clownfish sub-groups, deeply-nested eel/manta meshes,
+       and pollution meshes that may lack a direct pointer.
   ───────────────────────────────────────────────────────────────────────── */
   function _handleGaze(delta) {
     if (!_camL || !_scene) return;
@@ -774,42 +962,108 @@ window.ABYSS = window.ABYSS || {};
 
     var hits = _raycaster.intersectObjects(candidateList, true);
 
+    var rigPos = (window.ABYSS && window.ABYSS._rigPosition) ? ABYSS._rigPosition : null;
+
+    // ── Scan-lock radius update (same hysteresis as before) ───────────────
+    var nearest = Infinity;
+    if (rigPos && window.ABYSS.EntityManager && ABYSS.EntityManager.getRadarContacts) {
+      var blips = ABYSS.EntityManager.getRadarContacts();
+      for (var bi = 0; bi < blips.length; bi++) {
+        var b = blips[bi];
+        if (b.kind === 'shark') continue;
+        var bd = Math.hypot(b.x - rigPos.x, b.y - rigPos.y, b.z - rigPos.z);
+        if (bd < nearest) nearest = bd;
+      }
+    }
+    var enterR = SCAN_RADIUS;
+    var exitR  = SCAN_RADIUS + SCAN_HYSTERESIS;
+    if (_scanLock) {
+      _scanLock = nearest <= exitR;
+    } else {
+      _scanLock = nearest <= enterR;
+    }
+    if (!isFinite(nearest)) {
+      _scanFalloff = 0;
+    } else {
+      _scanFalloff = 1 - Math.max(0, Math.min(1, (nearest - (SCAN_RADIUS - 6)) / 6));
+    }
+
+    // ── Hit resolver — multi-strategy ────────────────────────────────────
+    // TUNE: maxScanDist — the distance gate for which a raycasted entity
+    // is considered "in range" for dwelling. Uses SCAN_RADIUS when no lock,
+    // SCAN_RADIUS*1.5 when lock is active (matches widened raycaster.far).
+    var maxScanDist = _scanLock ? SCAN_RADIUS * 1.5 : enterR;
+
     var hit = null;
     if (hits.length > 0) {
       var obj = hits[0].object;
       var ud  = (obj && obj.userData) ? obj.userData : {};
 
+      // Strategy 1: direct group pointer on the hit mesh
       if (ud.faunaGroup) {
-        // Ray hit a mesh inside a fauna group — resolve to the group
         hit = ud.faunaGroup;
       } else if (ud.terminalGroup) {
-        // Ray hit a mesh inside a terminal group — resolve to the group
         hit = ud.terminalGroup;
       } else if (ud.type === 'pollution' || ud.type === 'station') {
         hit = obj;
       } else {
-        // Walk up the hierarchy to find a tagged group
+        // Strategy 2: walk up hierarchy checking faunaGroup/terminalGroup
+        // at each ancestor. Fixes clownfish sub-groups and manta children
+        // that may lack the direct pointer but have a typed ancestor.
+        var walker = obj;
+        while (walker && walker !== _scene) {
+          var wu = walker.userData;
+          if (wu) {
+            if (wu.faunaGroup)    { hit = wu.faunaGroup;    break; }
+            if (wu.terminalGroup) { hit = wu.terminalGroup; break; }
+            if (wu.type === 'pollution' || wu.type === 'station') { hit = walker; break; }
+            if (wu.type === 'fauna' || wu.type === 'terminal')    { hit = walker; break; }
+          }
+          walker = walker.parent;
+        }
+      }
+
+      // Strategy 3: if still null — final walk-to-scene-root fallback
+      if (!hit) {
         var p = obj;
         while (p.parent && p.parent !== _scene) { p = p.parent; }
         if (p && p.userData && p.userData.type) hit = p;
       }
     }
 
-    // Filter out already-completed targets
+    // ── Filter already-completed targets ─────────────────────────────────
     if (hit && hit.userData && hit.userData.type) {
       var hud = hit.userData;
       if (hud.type === 'fauna'     && hud.scanned)   hit = null;
       if (hud.type === 'pollution' && hud.collected)  hit = null;
-      if (hud.type === 'terminal'  && hud.id === 'power_conduit'   && _conduitDone) hit = null;
-      if (hud.type === 'terminal'  && hud.id === 'o2_refill'       && hud.cooldown) hit = null;
+      if (hud.type === 'terminal'  && hud.id === 'power_conduit' && _conduitDone) hit = null;
+      if (hud.type === 'terminal'  && hud.id === 'o2_refill'     && hud.cooldown) hit = null;
       if (hud.type === 'station'   && _stationDone)  hit = null;
     } else {
       hit = null;
     }
 
+    // ── Distance guard ────────────────────────────────────────────────────
+    // Uses hit.position (group/mesh origin). For large entities like the manta
+    // ray, the group origin IS the live animated position (mutated each frame
+    // in entities.js update). maxScanDist is wider when scan lock is active.
+    if (hit && rigPos) {
+      var hp    = hit.position;
+      var hdist = Math.hypot(hp.x - rigPos.x, hp.y - rigPos.y, hp.z - rigPos.z);
+      if (hdist > maxScanDist) hit = null;
+    }
+
+    // ── Dwell accumulation with grace buffer ──────────────────────────────
+    // [CHANGED] Previous behaviour: any frame with hit===null instantly cleared
+    //   _gazeTime → 0, forcing a full restart.
+    // [NEW] A GAZE_GRACE second grace window is allowed before the bar resets.
+    //   Fast-swimming fauna can briefly exit the reticle without clearing progress.
     if (hit) {
+      // Valid hit this frame — reset the lost-gaze timer
+      _gazeLostTime = 0;
+
       if (_gazeTarget !== hit) {
-        // New target — reset dwell clock
+        // Switched to a new target — reset dwell clock
         _gazeTarget  = hit;
         _gazeTime    = 0;
       }
@@ -821,14 +1075,32 @@ window.ABYSS = window.ABYSS || {};
         _gazeTarget   = null;
         _gazeTime     = 0;
         _gazeProgress = 0;
+        _gazeLostTime = 0;
+      }
+    } else if (_gazeTarget !== null) {
+      // No valid hit — increment lost-gaze timer
+      _gazeLostTime += delta;
+
+      if (_gazeLostTime < GAZE_GRACE) {
+        // Within grace window: hold progress, don't reset.
+        // _gazeTime is not incremented during the grace window (no reward for
+        // darting out), but existing progress is preserved.
+        // _gazeProgress stays at its last value so the arc stays visible.
+      } else {
+        // Grace expired — full reset
+        _gazeTarget   = null;
+        _gazeTime     = 0;
+        _gazeProgress = 0;
+        _gazeLostTime = 0;
       }
     } else {
-      // Gaze left — reset arc immediately (zero DOM dependency)
-      _gazeTarget   = null;
+      // No current target and no previous target — stay at zero
       _gazeTime     = 0;
       _gazeProgress = 0;
+      _gazeLostTime = 0;
     }
   }
+
 
   /* ─────────────────────────────────────────────────────────────────────────
      MAIN GAME LOOP
@@ -836,22 +1108,15 @@ window.ABYSS = window.ABYSS || {};
   function _loop(ts) {
     requestAnimationFrame(_loop);
 
-    var delta = Math.min((ts - _lastTS) / 1000, 0.05);   // cap at 50ms to prevent tunnelling
+    var delta = Math.min((ts - _lastTS) / 1000, 0.1);   // cap at 100ms
     _lastTS   = ts;
 
     if (_state === STATE.PLAYING) {
       var t = _clock.getElapsedTime();
 
-      // 1. Update camera world matrices FIRST so Controls reads current frame direction
-      if (_rig)  _rig.updateMatrixWorld();
-      if (_camL) _camL.updateMatrixWorld();
-      if (_camR) _camR.updateMatrixWorld();
-
-      // 2. Update controls (samples cameraL direction internally)
+      // Module updates
       if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.update)
         ABYSS.Controls.update(delta);
-
-      // 3. Update entities, HUD, oxygen etc.
       if (window.ABYSS && window.ABYSS.EnvironmentBuilder && ABYSS.EnvironmentBuilder.update)
         ABYSS.EnvironmentBuilder.update(t);
       if (window.ABYSS && window.ABYSS.EntityManager && ABYSS.EntityManager.update)
@@ -859,9 +1124,12 @@ window.ABYSS = window.ABYSS || {};
 
       _handleGaze(delta);
 
-      // O₂ drain — doubled during shark proximity
-      var drainRate = (window.ABYSS && window.ABYSS._sharkNear)
-        ? O2_DRAIN_SHARK : O2_DRAIN_BASE;
+      // O₂ drain — depth scale + scan dwell + shark proximity
+      var rigY = _rig ? _rig.position.y : 0;
+      var depthNorm = Math.max(0, Math.min(1, (SURFACE_Y - rigY) / DEPTH_RANGE));
+      var drainRate = O2_DRAIN_BASE * (1 + depthNorm * O2_DEPTH_EXTRA);
+      if (window.ABYSS && window.ABYSS._sharkNear) drainRate *= O2_SHARK_MULT;
+      if (_gazeProgress > 0) drainRate += O2_DRAIN_SCAN;
       _oxygen -= drainRate * delta;
       _oxygen  = Math.max(0, _oxygen);
 
@@ -1006,6 +1274,8 @@ window.ABYSS = window.ABYSS || {};
     _gazeTarget     = null;
     _gazeTime       = 0;
     _gazeProgress   = 0;
+    _scanLock       = false;
+    _scanFalloff    = 0;
     _lastSharkAlert = 0;
     _o2Terminal     = null;
     window.ABYSS._sharkNear = false;
@@ -1034,7 +1304,7 @@ window.ABYSS = window.ABYSS || {};
 
     // Re-init controls rig references
     if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
-      ABYSS.Controls.init(_rig, _pitchObj, _camL);
+      ABYSS.Controls.init(_rig, _pitchObj);
     }
 
     _clock.start();
@@ -1070,7 +1340,7 @@ window.ABYSS = window.ABYSS || {};
     _initBgParticles();
 
     if (window.ABYSS && window.ABYSS.Controls && ABYSS.Controls.init) {
-      ABYSS.Controls.init(_rig, _pitchObj, _camL);
+      ABYSS.Controls.init(_rig, _pitchObj);
     }
 
     _attachTorch();
@@ -1086,7 +1356,7 @@ window.ABYSS = window.ABYSS || {};
     if (lo) setTimeout(function () { lo.style.display = 'none'; }, 380);
 
     /* ── DIVE IN button ─────────────────────────────────────────── */
-    var diveBtn = document.getElementById('diveBtn') || document.getElementById('btn-start-vr');
+    var diveBtn = document.getElementById('diveBtn');
     if (diveBtn) {
       diveBtn.addEventListener('click', function () {
         // Step 1: AudioContext unlock — must be first in gesture (iOS policy)
