@@ -1,36 +1,46 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/controls.js  v5
-   MODULE 1: Explicit-Thrust Locomotion — pitch decoupled from propulsion.
+   ABYSS: Marine Explorer — js/controls.js  v6
+   MODULE 1: Gaze-Driven Locomotion — pitch steers both orientation AND propulsion.
 
-   ── WHAT CHANGED (v4 → v5) ──────────────────────────────────────────────────
-   v4 ("pitch-to-swim"):  looking down automatically triggered forward thrust
-     and looking up triggered ascent — making it impossible to hover while
-     examining objects above or below eye level.
+   ── WHAT CHANGED (v5 → v6) ──────────────────────────────────────────────────
+   v5 ("explicit-thrust"): pitch controlled orientation only; propulsion
+     required explicit W/S key input — no hands-free movement possible.
+     This made Cardboard/gyro play unworkable without a controller.
 
-   v5 ("explicit-thrust"):  pitch/gyro controls ORIENTATION ONLY.
-     Propulsion fires only on explicit key input:
-       W / ↑          — thrust forward along full 3D camera vector (pitch-steered)
-       S / ↓          — thrust backward
-       A / ←          — strafe left  (XZ plane, yaw-relative)
-       D / →          — strafe right (XZ plane, yaw-relative)
-       Space          — ascend (independent vertical thrust)
-       C / Shift      — descend (independent vertical thrust)
+   v6 ("gaze-driven"):  pitch drives BOTH orientation AND forward speed.
+     The camera look direction is the engine — glancing down dives forward,
+     looking up ascends forward, and near-level pitch gives a gentle cruise.
 
    ── LOCOMOTION MODEL ─────────────────────────────────────────────────────────
-   Forward thrust:
-     - Direction = camera forward vector (includes pitch).
-     - Y-component is KEPT (not stripped) so pitching down while thrusting dives,
-       pitching up while thrusting ascends — fully intentional, explicitly driven.
-   Strafe (A/D):
-     - XZ-only: yaw-relative sideways movement, no Y component.
-   Vertical (Space/C):
-     - Additive to whatever Y motion comes from forward thrust.
-     - Hard-clamped to [FLOOR_BOUND, SURFACE_BOUND].
-   Deceleration:
-     - Both swimVel and vertVel lerp to 0 when their input is released.
-     - Smooth stop via SWIM_DECEL_K and VERT_DECEL_K (unchanged from v4).
+   Three pitch zones, evaluated every frame from _pitch.rotation.x:
 
-   ── PUBLIC API (unchanged from v4) ──────────────────────────────────────────
+   1. NEUTRAL HOVER BAND  (|pitchDeg| ≤ NEUTRAL_BAND_DEG  i.e. ±5°)
+      → targetSpeed = NEUTRAL_CRUISE (1.2 u/s gentle drift forward).
+        Player is never fully frozen — they always drift slowly ahead.
+
+   2. PITCH ZONE  (|pitchDeg| > NEUTRAL_BAND_DEG)
+      → targetSpeed scales linearly from NEUTRAL_CRUISE up to CRUISE_SPEED
+        as pitch angle increases toward ±90°. Direction (up/down) is encoded
+        in the camera-forward Y component, not the sign of speed.
+
+   3. SCAN-ASSIST SLOWDOWN  (window.ABYSS._gazeProgress > 0)
+      → targetSpeed multiplied by SCAN_SLOWDOWN_MULTIPLIER (0.25).
+        Player glides near-still while the scan arc fills.
+        Speed eases back up automatically once the scan completes or fails.
+
+   W / ↑  — explicit forward override (boosts up to CRUISE_SPEED regardless
+             of pitch). Desktop players can still use keys normally.
+   S / ↓  — explicit brake / reverse thrust.
+   A / ←  — strafe left  (XZ-only, yaw-relative)
+   D / →  — strafe right (XZ-only, yaw-relative)
+   Space  — ascend (additive vertical, independent of pitch)
+   C / Shift — descend (additive vertical)
+
+   Forward velocity is applied along the FULL 3D camera-forward vector so
+   pitching down while moving dives, pitching up ascends — exactly the
+   original v4 "pitch-to-swim" feel, but at rebalanced speeds.
+
+   ── PUBLIC API (unchanged from v4/v5) ───────────────────────────────────────
      init(cameraRig, pitchObject)
      update(delta)
      requestGyro()    → Promise<boolean>
@@ -45,29 +55,91 @@ window.ABYSS = window.ABYSS || {};
 window.ABYSS.Controls = (function () {
   'use strict';
 
-  /* ─── Locomotion constants ───────────────────────────────────────────────── */
-  // TUNE: forward/backward thrust speed (units/sec) — range 4.0–10.0
-  var SWIM_MAX     = 6.5;
-  // TUNE: strafe speed (units/sec) — range 3.0–8.0
-  var STRAFE_SPEED = 4.5;
-  // TUNE: vertical thrust speed (units/sec) — range 2.0–5.0
-  var VERT_MAX     = 3.5;
+  /* ═══════════════════════════════════════════════════════════════════════════
+     TUNABLE CONSTANTS — adjust these to shape the feel of locomotion.
+     All values carry their intended range in the comment.
+  ═══════════════════════════════════════════════════════════════════════════ */
 
-  // TUNE: lerp acceleration factors — higher = snappier response
-  var SWIM_ACCEL_K  = 3.5;   // forward/back acceleration
-  var VERT_ACCEL_K  = 3.0;   // vertical acceleration
+  // ── Forward / pitch-driven speed ──────────────────────────────────────────
 
-  // TUNE: deceleration (seconds to reach near-zero) — lower = shorter slide
-  var SWIM_DECEL_K  = 0.08;  // forward/back decel time constant
-  var VERT_DECEL_K  = 0.08;  // vertical decel time constant
+  // CRUISE_SPEED: maximum forward speed reached when pitch is at full tilt
+  // (units/sec). Applies once pitch exceeds NEUTRAL_BAND_DEG. At ±90° pitch
+  // the player reaches this speed; intermediate angles scale linearly.
+  // TUNE: range 1.5–5.0  (was SWIM_MAX 6.5 in v5 — cut ~57%)
+  var CRUISE_SPEED      = 2.8;
 
-  // Depth bounds (world Y) — must match environment.js seabed at Y=-8
+  // NEUTRAL_CRUISE: gentle drift speed when pitch is within ±NEUTRAL_BAND_DEG
+  // of level (the "hover" band). Player is never fully stationary — they
+  // always cruise slowly forward, making it easy to stay on a target.
+  // TUNE: range 0.5–2.0
+  var NEUTRAL_CRUISE    = 1.2;
+
+  // NEUTRAL_BAND_DEG: half-width of the neutral hover band in degrees.
+  // Inside this band, speed = NEUTRAL_CRUISE. Outside, speed ramps up.
+  // TUNE: range 3–10
+  var NEUTRAL_BAND_DEG  = 5;
+
+  // ── Scan-assist slowdown ───────────────────────────────────────────────────
+
+  // SCAN_SLOWDOWN_MULTIPLIER: speed scale applied to targetSpeed whenever
+  // window.ABYSS._gazeProgress > 0 (i.e. the scanner reticle is actively
+  // dwelling on an interactable). Brings speed down to ~0.3 u/s at cruise,
+  // which is slow enough to keep any target inside the scan reticle.
+  // Set to 0.0 for a full freeze, 1.0 to disable the slowdown entirely.
+  // TUNE: range 0.0–0.5
+  var SCAN_SLOWDOWN_MULTIPLIER = 0.25;
+
+  // ── Acceleration / deceleration ────────────────────────────────────────────
+
+  // ACCELERATION_LERP: lerp factor toward targetSpeed each frame.
+  // Higher = snappier ramp-up (more responsive); lower = floatier glide.
+  // Applied as: swimVel = lerp(swimVel, target, ACCELERATION_LERP * delta)
+  // TUNE: range 1.5–6.0
+  var ACCELERATION_LERP = 2.8;
+
+  // DECEL_LERP: lerp factor back toward zero when velocity overshoots target
+  // (currently only used for explicit W/S key release — gaze locomotion
+  // naturally decelerates by chasing a lower targetSpeed, not zero).
+  // TUNE: range 4.0–12.0
+  var DECEL_LERP        = 8.0;
+
+  // ── Scan cone / lock radius ────────────────────────────────────────────────
+
+  // SCAN_CONE_RADIUS: exposed here as a named constant for clarity. The actual
+  // authoritative value is SCAN_RADIUS in main.js (set to 26 u). This constant
+  // is informational only — controls.js does not perform its own raycasting.
+  // TUNE: mirror any change to SCAN_RADIUS in main.js
+  var SCAN_CONE_RADIUS  = 26;  // informational — matches main.js SCAN_RADIUS
+
+  // ── Strafe / vertical ──────────────────────────────────────────────────────
+
+  // STRAFE_SPEED: A/D lateral fin-kick speed (XZ-only, yaw-relative).
+  // TUNE: range 1.0–4.0
+  var STRAFE_SPEED  = 2.2;
+
+  // VERT_MAX: Space/C manual vertical thrust speed (units/sec).
+  // Additive to whatever Y-motion pitch-forward already produces.
+  // TUNE: range 1.5–4.0
+  var VERT_MAX      = 2.5;
+
+  // VERT_ACCEL_K: lerp factor for vertical velocity (Space/C).
+  // TUNE: range 2.0–5.0
+  var VERT_ACCEL_K  = 3.0;
+
+  // VERT_DECEL_K: decel time-constant for vertical velocity (seconds).
+  // TUNE: range 0.05–0.15
+  var VERT_DECEL_K  = 0.08;
+
+  // ── Depth bounds ───────────────────────────────────────────────────────────
+  // Must match environment.js seabed Y = -8 and surface Y = 20.
   var FLOOR_Y       = -8;
   var SURFACE_Y     =  20;
-  var FLOOR_BOUND   = FLOOR_Y   + 1.5;   // -6.5
-  var SURFACE_BOUND = SURFACE_Y - 0.5;   //  19.5
+  var FLOOR_BOUND   = FLOOR_Y   + 1.5;   // -6.5  (soft floor cushion)
+  var SURFACE_BOUND = SURFACE_Y - 0.5;   //  19.5 (soft ceiling cushion)
 
-  /* ─── Private state ─────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════
+     PRIVATE STATE
+  ═══════════════════════════════════════════════════════════════════════════ */
   var _rig   = null;
   var _pitch = null;
 
@@ -76,11 +148,10 @@ window.ABYSS.Controls = (function () {
   var _lastX         = 0;
   var _lastY         = 0;
   var _yaw           = 0;
-  var _pitchAngle    = 0;   // desktop mouse drag accumulated pitch (radians)
+  var _pitchAngle    = 0;   // accumulated pitch from desktop drag (radians)
 
-  // [CHANGED] _swimVel is now exclusively driven by W/S input, not by pitch angle.
-  var _swimVel   = 0;   // signed: + = forward, – = backward (units/sec)
-  var _vertVel   = 0;   // vertical velocity (units/sec), + = up
+  var _swimVel   = 0;       // signed forward speed (+ = forward, – = backward)
+  var _vertVel   = 0;       // vertical velocity (+ = up)
   var _swimState = 'HOVERING';
 
   var _gyroActive  = false;
@@ -88,7 +159,7 @@ window.ABYSS.Controls = (function () {
   var _screenAngle = 0;
 
   /* ─────────────────────────────────────────────────────────────────────────
-     clampRig — enforce world boundaries
+     _clampRig — enforce world boundaries
   ───────────────────────────────────────────────────────────────────────── */
   function _clampRig() {
     _rig.position.x = THREE.MathUtils.clamp(_rig.position.x, -55, 55);
@@ -98,14 +169,14 @@ window.ABYSS.Controls = (function () {
 
   /* ═══════════════════════════════════════════════════════════════════════════
      init(cameraRig, pitchObject)
-     cameraRig    — THREE.Group that carries position + yaw
-     pitchObject  — child Group inside rig that carries pitch (cameras attached)
+     cameraRig    — THREE.Group carrying position + yaw
+     pitchObject  — child Group inside rig carrying pitch (cameras attached)
   ═══════════════════════════════════════════════════════════════════════════ */
   function init(cameraRig, pitchObject) {
     _rig   = cameraRig;
     _pitch = pitchObject;
 
-    // Reset mutable locomotion state for session reuse
+    // Reset all locomotion state for session reuse / restart
     _keys          = {};
     _isPointerDown = false;
     _yaw           = 0;
@@ -118,7 +189,11 @@ window.ABYSS.Controls = (function () {
     window.addEventListener('keydown', function (e) { _keys[e.key.toLowerCase()] = true;  });
     window.addEventListener('keyup',   function (e) { _keys[e.key.toLowerCase()] = false; });
 
-    /* ── Desktop pointer drag-look (disabled when gyro is active) ── */
+    /* ── Desktop pointer drag-look ──
+       Drag updates yaw + pitch for camera orientation.
+       The pitch angle it writes is then READ by update() for pitch-to-swim.
+       No separate propulsion side-effect needed — the update() loop handles it.
+    ── */
     window.addEventListener('pointerdown', function (e) {
       _isPointerDown = true;
       _lastX = e.clientX;
@@ -131,8 +206,6 @@ window.ABYSS.Controls = (function () {
       _lastX = e.clientX;
       _lastY = e.clientY;
 
-      // [UNCHANGED] Drag updates yaw + pitch for camera orientation only.
-      // No propulsion side-effect from this block.
       _yaw        -= dx * 0.003;
       _pitchAngle -= dy * 0.003;
       _pitchAngle  = THREE.MathUtils.clamp(_pitchAngle, -Math.PI / 2, Math.PI / 2);
@@ -154,83 +227,114 @@ window.ABYSS.Controls = (function () {
      update(delta)
 
      Execution order each frame:
-       1. Read explicit thrust inputs (W/S, Space/C/Shift, A/D)
-       2. Compute target forward swim velocity from W/S input ONLY
-          [CHANGED] No pitch-zone logic here — pitch does NOT drive swimVel.
-       3. Lerp swimVel toward target (accel) or 0 (decel)
-       4. Compute target vertical velocity from Space/C input ONLY
-          [CHANGED] Ascent/dive are not triggered by pitch angle alone.
-       5. Lerp vertVel toward target
-       6. Apply swimVel along full 3D camera-forward vector (pitch-steered)
-          [CHANGED] Y-component is NO LONGER stripped — when you thrust forward
-          while pitched down, you intentionally dive; pitched up, you intentionally
-          ascend. This replaces both the old swim-zone AND the old vertical-zone
-          for the gyro/VR case where no keyboard is available.
-       7. Apply dedicated vertical velocity (Space/C) additively
-       8. Enforce depth bounds
-       9. Derive swimState string for HUD
-      10. Publish rig position for entity proximity / radar system
+       1. Read explicit key inputs (W/S override, Space/C, A/D)
+       2. Read current pitch angle from _pitch.rotation.x
+       3. Compute pitch-zone targetSpeed (neutral / ramp / cruise)
+       4. Apply scan-assist slowdown if gaze progress > 0
+       5. W/S key override: W raises target to CRUISE_SPEED, S brakes/reverses
+       6. Lerp _swimVel toward targetSpeed (smooth acceleration)
+       7. Apply _swimVel along full 3D camera-forward vector (Y component kept)
+       8. Apply A/D strafe (XZ-only, yaw-relative)
+       9. Lerp _vertVel toward Space/C target; apply vertically
+      10. Enforce depth bounds
+      11. Derive swimState string for HUD
+      12. Publish rig position / yaw for entity proximity + radar
   ═══════════════════════════════════════════════════════════════════════════ */
   function update(delta) {
     if (!_rig || !_pitch) return;
 
-    /* ── 1. Read explicit thrust inputs ─────────────────────────────────────
-       [CHANGED] W/S control forward/backward thrust only.
-       [CHANGED] Space/C/Shift control vertical thrust only.
-       [CHANGED] A/D strafe as before, XZ-plane only.
-       Pitch angle is now ORIENTATION-ONLY — it is not read here for velocity.
-    ── */
-    var thrustFwd  = (_keys['w'] || _keys['arrowup']    ? 1 : 0)   // W = thrust forward
-                   + (_keys['s'] || _keys['arrowdown']   ? -1 : 0); // S = thrust backward
-    var thrustUp   = (_keys[' ']                          ? 1 : 0)   // Space = ascend
-                   + (_keys['c'] || _keys['shift']        ? -1 : 0); // C/Shift = descend
-    var thrustStrafe = (_keys['a'] || _keys['arrowleft']  ? -1 : 0)  // A = strafe left
-                     + (_keys['d'] || _keys['arrowright']  ?  1 : 0); // D = strafe right
+    /* ── 1. Read explicit key inputs ─────────────────────────────────────── */
+    var keyFwd    = (_keys['w'] || _keys['arrowup'])    ? 1  : 0;
+    var keyBack   = (_keys['s'] || _keys['arrowdown'])  ? -1 : 0;
+    var keyThrust = keyFwd + keyBack;   // –1, 0, or +1
 
-    /* ── 2. Target forward swim velocity — key-driven only ──────────────────
-       [CHANGED] Removed all lookDownRad / SWIM_DEAD_LO / SWIM_DEAD_HI logic.
-       swimVel target is now simply SWIM_MAX (or 0) based on W/S key state.
-    ── */
-    var targetSwimVel = thrustFwd * SWIM_MAX;   // +SWIM_MAX, 0, or –SWIM_MAX
+    var thrustUp     = (_keys[' '])                          ? 1  : 0;
+    var thrustDown   = (_keys['c'] || _keys['shift'])        ? -1 : 0;
+    var thrustStrafe = (_keys['a'] || _keys['arrowleft']  ?  -1 : 0)
+                     + (_keys['d'] || _keys['arrowright'] ?   1 : 0);
 
-    /* ── 3. Lerp swimVel toward target ── */
-    if (Math.abs(targetSwimVel) > 0.001) {
-      _swimVel = THREE.MathUtils.lerp(_swimVel, targetSwimVel,
-                   Math.min(SWIM_ACCEL_K * delta, 1.0));
+    /* ── 2. Read pitch from _pitch.rotation.x ───────────────────────────────
+       Same value written by both drag-look and gyro — single source of truth.
+       Positive = looking up; negative = looking down.
+    ── */
+    var pitchRad = _pitch.rotation.x;
+    var pitchDeg = THREE.MathUtils.radToDeg(pitchRad);
+    var absPitch = Math.abs(pitchDeg);
+
+    /* ── 3. Pitch-zone target speed ─────────────────────────────────────────
+       Zone A — Neutral hover band (|pitch| ≤ NEUTRAL_BAND_DEG):
+         targetSpeed = NEUTRAL_CRUISE → gentle perpetual drift, easy to scan.
+
+       Zone B — Pitch zone (|pitch| > NEUTRAL_BAND_DEG):
+         Speed ramps linearly from NEUTRAL_CRUISE at the band edge up to
+         CRUISE_SPEED at ±90°.  Blended so there is no step discontinuity
+         at the band boundary:
+           t = (absPitch - NEUTRAL_BAND_DEG) / (90 - NEUTRAL_BAND_DEG)
+           targetSpeed = lerp(NEUTRAL_CRUISE, CRUISE_SPEED, clamp(t, 0, 1))
+    ── */
+    var targetSpeed;
+    if (absPitch <= NEUTRAL_BAND_DEG) {
+      targetSpeed = NEUTRAL_CRUISE;
     } else {
-      // Smooth deceleration to a full stop when no thrust key is held
-      _swimVel = THREE.MathUtils.lerp(_swimVel, 0,
-                   Math.min(delta / SWIM_DECEL_K, 1.0));
-      if (Math.abs(_swimVel) < 0.008) _swimVel = 0;
+      var t = (absPitch - NEUTRAL_BAND_DEG) / (90 - NEUTRAL_BAND_DEG);
+      t = Math.max(0, Math.min(1, t));
+      targetSpeed = NEUTRAL_CRUISE + t * (CRUISE_SPEED - NEUTRAL_CRUISE);
     }
 
-    /* ── 4. Target vertical velocity — dedicated keys only ──────────────────
-       [CHANGED] Removed all lookUpRad / ASCENT_THRESH / lookDownRad / DIVE_THRESH logic.
-       Vertical thrust is now exclusively Space (up) and C/Shift (down).
+    /* ── 4. Scan-assist slowdown ─────────────────────────────────────────────
+       Read the gaze-progress value published by main.js _handleGaze().
+       When the scanner reticle is actively dwelling on a target, multiply
+       the target speed down to ~20–25% so the player near-stops while scanning.
+       Speed eases back naturally as soon as _gazeProgress returns to 0.
     ── */
-    var targetVertVel = thrustUp * VERT_MAX;    // +VERT_MAX, 0, or –VERT_MAX
+    var gazeProgress = (window.ABYSS && typeof window.ABYSS._gazeProgress === 'number')
+      ? window.ABYSS._gazeProgress : 0;
 
-    /* ── 5. Lerp vertVel toward target ── */
-    if (Math.abs(targetVertVel) > 0.008) {
-      _vertVel = THREE.MathUtils.lerp(_vertVel, targetVertVel,
-                   Math.min(VERT_ACCEL_K * delta, 1.0));
-    } else {
-      _vertVel = THREE.MathUtils.lerp(_vertVel, 0,
-                   Math.min(delta / VERT_DECEL_K, 1.0));
-      if (Math.abs(_vertVel) < 0.008) _vertVel = 0;
+    if (gazeProgress > 0) {
+      targetSpeed *= SCAN_SLOWDOWN_MULTIPLIER;
     }
 
-    /* ── 6. Apply forward swim velocity — full 3D camera-forward vector ─────
-       [CHANGED] No longer XZ-only. The Y component is kept so that pitching
-       down while thrusting forward descends, pitching up ascends. This is the
-       intentional 3D swim direction that the player is deliberately choosing.
-       Without thrust (W/S), pitch alone produces ZERO movement (hover).
+    /* ── 5. W/S explicit override ────────────────────────────────────────────
+       W: override raises targetSpeed to CRUISE_SPEED (full forward sprint),
+          bypassing pitch zone and scan slowdown. Lets desktop players burst
+          forward to chase a target or navigate quickly.
+       S: overrides to negative CRUISE_SPEED (brake/reverse).
+          When S is held while gaze-drifting, the explicit reverse always wins.
+    ── */
+    if (keyThrust !== 0) {
+      targetSpeed = keyThrust * CRUISE_SPEED;
+    }
+
+    /* ── 6. Lerp _swimVel toward targetSpeed ─────────────────────────────────
+       Single lerp toward targetSpeed — works for both acceleration (going from
+       slow to fast) and deceleration (pitch returns to neutral, target drops
+       from CRUISE_SPEED back to NEUTRAL_CRUISE). The lerp naturally smooths
+       both transitions. A separate hard-decel case runs only when a keyThrust
+       has just been released and the pitch-zone itself is in the neutral band,
+       to avoid a float-off artifact after key release.
+    ── */
+    _swimVel = THREE.MathUtils.lerp(
+      _swimVel,
+      targetSpeed,
+      Math.min(ACCELERATION_LERP * delta, 1.0)
+    );
+
+    // Hard decel to exactly neutral cruise when key was released mid-cruise
+    // and pitch is now neutral (prevents _swimVel overshoot past NEUTRAL_CRUISE).
+    if (keyThrust === 0 && absPitch <= NEUTRAL_BAND_DEG && gazeProgress === 0) {
+      if (Math.abs(_swimVel - NEUTRAL_CRUISE) < 0.04) {
+        _swimVel = NEUTRAL_CRUISE;
+      }
+    }
+
+    /* ── 7. Apply _swimVel along full 3D camera-forward vector ───────────────
+       Y-component is KEPT so pitching down drives the player forward-and-down
+       (diving) and pitching up drives forward-and-up (ascending). This is the
+       intentional pitch-steered 3D navigation.
     ── */
     if (Math.abs(_swimVel) > 0.008) {
-      // Full camera-forward vector (includes pitch rotation)
       var camFwd = new THREE.Vector3(0, 0, -1);
-      // Combine rig yaw + pitch object pitch into one quaternion
-      var fullQ = new THREE.Quaternion();
+      var fullQ  = new THREE.Quaternion();
       fullQ.multiplyQuaternions(
         new THREE.Quaternion().setFromEuler(new THREE.Euler(0, _rig.rotation.y, 0)),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(_pitch.rotation.x, 0, 0))
@@ -240,9 +344,7 @@ window.ABYSS.Controls = (function () {
       _rig.position.add(camFwd);
     }
 
-    /* ── 6b. Apply A/D strafe — XZ-only, yaw-relative ──────────────────────
-       Strafe is always horizontal so it does not interact with pitch.
-    ── */
+    /* ── 8. A/D strafe — XZ-only, yaw-relative ───────────────────────────── */
     if (Math.abs(thrustStrafe) > 0) {
       var strafeVec = new THREE.Vector3(thrustStrafe, 0, 0);
       var yawQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, _rig.rotation.y, 0));
@@ -251,26 +353,32 @@ window.ABYSS.Controls = (function () {
       _rig.position.add(strafeVec);
     }
 
-    /* ── 7. Apply dedicated vertical velocity ───────────────────────────────
-       Additive to the Y motion already applied by forward thrust + pitch.
+    /* ── 9. Space/C vertical thrust — additive, independent of pitch ────────
+       Additive to whatever Y component pitch-forward already applies.
+       Lerp toward target; snap to zero to avoid perpetual micro-drift.
     ── */
+    var targetVertVel = (thrustUp + thrustDown) * VERT_MAX;
+    if (Math.abs(targetVertVel) > 0.008) {
+      _vertVel = THREE.MathUtils.lerp(_vertVel, targetVertVel,
+                   Math.min(VERT_ACCEL_K * delta, 1.0));
+    } else {
+      _vertVel = THREE.MathUtils.lerp(_vertVel, 0,
+                   Math.min(delta / VERT_DECEL_K, 1.0));
+      if (Math.abs(_vertVel) < 0.008) _vertVel = 0;
+    }
     if (Math.abs(_vertVel) > 0.008) {
       _rig.position.y += _vertVel * delta;
     }
 
-    /* ── 8. Enforce depth bounds ── */
+    /* ── 10. Enforce depth bounds ── */
     _rig.position.y = THREE.MathUtils.clamp(_rig.position.y, FLOOR_BOUND, SURFACE_BOUND);
     _clampRig();
 
-    /* ── 9. Derive swimState string for HUD ──────────────────────────────────
-       [CHANGED] State is derived from actual velocity, not from pitch zone.
-       'SWIMMING'  — forward or backward thrust active.
-       'ASCENDING' — net upward velocity (from thrust+pitch OR Space).
-       'DIVING'    — net downward velocity.
-       'HOVERING'  — all velocities at rest.
+    /* ── 11. Derive swimState for HUD ────────────────────────────────────────
+       State derived from actual net vertical motion to give the HUD correct
+       ASCENDING / DIVING / SWIMMING / HOVERING labels.
     ── */
     var totalVertMotion = _vertVel;
-    // Include the Y-component contribution from the forward thrust vector
     if (Math.abs(_swimVel) > 0.008) {
       totalVertMotion += Math.sin(_pitch.rotation.x) * _swimVel;
     }
@@ -285,7 +393,7 @@ window.ABYSS.Controls = (function () {
       _swimState = 'HOVERING';
     }
 
-    /* ── 10. Publish rig position for entity proximity / radar ── */
+    /* ── 12. Publish rig position + yaw for entity proximity / radar ── */
     if (window.ABYSS) {
       if (!window.ABYSS._rigPosition) {
         window.ABYSS._rigPosition = new THREE.Vector3();
@@ -307,7 +415,6 @@ window.ABYSS.Controls = (function () {
      immediately — resolve after first valid event.
   ═══════════════════════════════════════════════════════════════════════════ */
   function requestGyro() {
-    // iOS 13+ requires explicit permission request
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
       return DeviceOrientationEvent.requestPermission().then(function (res) {
@@ -317,8 +424,6 @@ window.ABYSS.Controls = (function () {
         return _gyroFallback();
       });
     }
-
-    // Android / desktop — attempt without permission
     return _waitForFirstGyroEvent();
   }
 
@@ -351,20 +456,35 @@ window.ABYSS.Controls = (function () {
      Three.js world frame (Y-up). Screen orientation quaternion corrects for
      landscape rotation.
 
-     [CHANGED] Gyro now drives ORIENTATION ONLY — exactly as in v4, but the
-     pitch value it writes to _pitch.rotation.x no longer implicitly triggers
-     swimVel in update(). update() reads thrustFwd from _keys, not from pitch.
+     LANDSCAPE FIX:
+     The screen-orientation angle is now read with an explicit != null guard
+     rather than a truthy check. The truthy check silently treated angle=0
+     (portrait) identically to undefined (iOS Safari before the first
+     orientationchange event fires) — causing landscape mode to fall back to
+     0° and leaving the device axes uncompensated (tilt up = look right).
 
-     VR/Cardboard users: tilt device to aim, tap or use a paired Bluetooth
-     controller for W/S thrust. On Android the volume keys can be bound to
-     W/S via a custom controller bridge if needed.
+     Priority chain for landscape angle:
+       1. screen.orientation.angle != null  →  use it (0 / 90 / 180 / 270)
+       2. typeof window.orientation === 'number'  →  iOS fallback (0 / 90 / -90)
+       3. else 0  →  safe default
+
+     All per-frame scratch objects (_screenAxis, _rigEuler, _worldQ) are
+     allocated ONCE outside the event handler. At 60 Hz this eliminates ~180
+     object allocations/sec and avoids GC pauses on low-RAM VR devices.
+
+     Gyro drives ORIENTATION — it writes _pitch.rotation.x, which update()
+     reads as the pitch-zone input for pitch-to-swim speed calculation.
+     Tilting device forward dives; tilting back ascends.
   ═══════════════════════════════════════════════════════════════════════════ */
   function _attachGyro() {
     _gyroActive = true;
 
-    var _euler   = new THREE.Euler();
-    var _screenQ = new THREE.Quaternion();
-    var _worldQ  = new THREE.Quaternion();
+    // Pre-allocated scratch objects — NOT recreated on every sensor event
+    var _euler      = new THREE.Euler();
+    var _screenQ    = new THREE.Quaternion();
+    var _worldQ     = new THREE.Quaternion();
+    var _screenAxis = new THREE.Vector3(0, 0, 1); // screen normal (Z-axis)
+    var _rigEuler   = new THREE.Euler();           // reused for YXZ decomposition
     _worldQ.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
     window.addEventListener('deviceorientation', function (e) {
@@ -374,34 +494,38 @@ window.ABYSS.Controls = (function () {
       var beta  = THREE.MathUtils.degToRad(e.beta);
       var gamma = THREE.MathUtils.degToRad(e.gamma);
 
+      // W3C → Three.js world frame (ZXY Euler order is the W3C spec order)
       _euler.set(beta, alpha, -gamma, 'ZXY');
       _gyroQ.setFromEuler(_euler);
       _gyroQ.premultiply(_worldQ);
 
-      // Screen orientation correction (landscape mode)
-      _screenAngle = (window.screen.orientation && window.screen.orientation.angle)
-        ? window.screen.orientation.angle : 0;
-      _screenQ.setFromAxisAngle(
-        new THREE.Vector3(0, 0, 1),
-        -THREE.MathUtils.degToRad(_screenAngle)
-      );
+      // ── Landscape screen compensation ─────────────────────────────────────
+      // Read angle via != null so 0° portrait is distinguished from undefined.
+      // Fall back to deprecated window.orientation for iOS Safari which returns
+      // undefined from screen.orientation.angle before the first page rotation.
+      var ang = 0;
+      if (window.screen && window.screen.orientation &&
+          window.screen.orientation.angle != null) {
+        ang = window.screen.orientation.angle;
+      } else if (typeof window.orientation === 'number') {
+        ang = window.orientation;
+      }
+      _screenQ.setFromAxisAngle(_screenAxis, -THREE.MathUtils.degToRad(ang));
       _gyroQ.multiply(_screenQ);
 
-      // Apply to rig — orientation only, no velocity side-effect
+      // Apply final orientation quaternion to the camera rig
       _rig.quaternion.copy(_gyroQ);
 
-      // Derive pitch angle via YXZ decomposition so _pitch.rotation.x
-      // correctly reflects head tilt for getPitchDeg() readout.
-      // [CHANGED] This value no longer drives swimVel.
-      var rigEuler = new THREE.Euler().setFromQuaternion(_gyroQ, 'YXZ');
-      _pitch.rotation.x = rigEuler.x;
+      // YXZ decomposition → _pitch.rotation.x drives pitch-to-swim in update()
+      _rigEuler.setFromQuaternion(_gyroQ, 'YXZ');
+      _pitch.rotation.x = _rigEuler.x;
       _pitch.rotation.y = 0;
       _pitch.rotation.z = 0;
     });
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     PUBLIC INTERFACE — window.ABYSS.Controls  (API surface unchanged from v4)
+     PUBLIC INTERFACE — window.ABYSS.Controls  (API surface unchanged from v4/v5)
   ═══════════════════════════════════════════════════════════════════════════ */
   var publicControls = {
     init:         init,
@@ -410,7 +534,6 @@ window.ABYSS.Controls = (function () {
     getVelocity:  function () { return _swimVel; },
     getSwimState: function () { return _swimState; },
     getPitchDeg:  function () {
-      // Returns current pitch in degrees (+up, -down) from pitch object
       if (_pitch) return THREE.MathUtils.radToDeg(_pitch.rotation.x);
       return 0;
     },
@@ -422,4 +545,3 @@ window.ABYSS.Controls = (function () {
   return publicControls;
 
 }());
-

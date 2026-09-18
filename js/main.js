@@ -55,7 +55,9 @@ window.ABYSS = window.ABYSS || {};
   // Scanner — uniform 3D radius + hysteresis (prevents edge flicker)
   // TUNE: SCAN_RADIUS governs raycaster far-clip and interaction range.
   // TUNE: SCAN_HYSTERESIS adds a soft outer band so contacts don't flicker at the edge.
-  var SCAN_RADIUS      = 22;   // TUNE: interaction/gaze-lock radius (world units) — range 18–30
+  var SCAN_RADIUS      = 26;   // TUNE: interaction/gaze-lock radius (world units) — range 18–30
+                               //       Widened from 22 → 26 to match SCAN_CONE_RADIUS in controls.js.
+                               //       More forgiving of target drift during pitch-driven locomotion.
   var SCAN_HYSTERESIS  = 3;    // TUNE: hysteresis band width — range 2–5
   var _scanLock        = false;
   var _scanFalloff     = 0;
@@ -1069,6 +1071,8 @@ window.ABYSS = window.ABYSS || {};
       }
       _gazeTime    += delta;
       _gazeProgress = Math.min(1, _gazeTime / GAZE_REQ);
+      // Publish gaze progress so controls.js can apply scan-assist slowdown
+      if (window.ABYSS) window.ABYSS._gazeProgress = _gazeProgress;
 
       if (_gazeTime >= GAZE_REQ) {
         _commitInteraction(hit);
@@ -1092,12 +1096,14 @@ window.ABYSS = window.ABYSS || {};
         _gazeTime     = 0;
         _gazeProgress = 0;
         _gazeLostTime = 0;
+        if (window.ABYSS) window.ABYSS._gazeProgress = 0;
       }
     } else {
       // No current target and no previous target — stay at zero
       _gazeTime     = 0;
       _gazeProgress = 0;
       _gazeLostTime = 0;
+      if (window.ABYSS) window.ABYSS._gazeProgress = 0;
     }
   }
 
@@ -1278,7 +1284,8 @@ window.ABYSS = window.ABYSS || {};
     _scanFalloff    = 0;
     _lastSharkAlert = 0;
     _o2Terminal     = null;
-    window.ABYSS._sharkNear = false;
+    window.ABYSS._sharkNear    = false;
+    window.ABYSS._gazeProgress = 0;   // clear scan-assist bridge for fresh session
 
     // In-place entity reset (re-shows pollution, resets eel phases etc.)
     if (window.ABYSS && window.ABYSS.EntityManager && ABYSS.EntityManager.reset) {

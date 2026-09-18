@@ -23,6 +23,7 @@ window.ABYSS = window.ABYSS || {};
   /* ─── Module state ──────────────────────────────────────────────────────────── */
   var _scene = null;
   var _particles = null;      // THREE.Points — marine snow (450 cap)
+  var _bubbles   = null;      // THREE.Points — rising bubble system (200 cap)
   var _anemones = [];        // THREE.Group[] for tentacle sway
   var _kelpMaterials = [];        // ShaderMaterial[] needing uTime uniform update
   var _causticMat = null;      // MeshStandardMaterial on seabed
@@ -39,23 +40,23 @@ window.ABYSS = window.ABYSS || {};
     cv.width = 512; cv.height = 512;
     var c = cv.getContext('2d');
 
-    // Warm sandy base
-    c.fillStyle = 'hsl(32, 34%, 26%)';
+    // Abyssal silt base — dark blue-grey, suits deep-sea depth
+    c.fillStyle = 'hsl(220, 20%, 12%)';
     c.fillRect(0, 0, 512, 512);
 
-    // Speckle grains
-    for (var i = 0; i < 5000; i++) {
-      var lum = 28 + Math.random() * 24;
-      c.fillStyle = 'hsl(35, 28%, ' + lum + '%)';
+    // Fine sediment speckles — varied dark luminance for micro-relief texture
+    for (var i = 0; i < 6000; i++) {
+      var lum = 10 + Math.random() * 16;
+      c.fillStyle = 'hsl(215, 18%, ' + lum + '%)';
       c.beginPath();
-      c.arc(Math.random() * 512, Math.random() * 512, Math.random() * 2 + 0.3, 0, Math.PI * 2);
+      c.arc(Math.random() * 512, Math.random() * 512, Math.random() * 1.8 + 0.2, 0, Math.PI * 2);
       c.fill();
     }
 
-    // Subtle ripple strokes — suggest sand dune micro-relief
-    for (var j = 0; j < 130; j++) {
-      c.strokeStyle = 'rgba(170, 130, 70, ' + (Math.random() * 0.18) + ')';
-      c.lineWidth = Math.random() * 2.8;
+    // Subtle current ripple strokes — cooler grey-blue tones
+    for (var j = 0; j < 150; j++) {
+      c.strokeStyle = 'rgba(80, 110, 150, ' + (Math.random() * 0.14) + ')';
+      c.lineWidth = Math.random() * 2.2;
       c.beginPath();
       var sx = Math.random() * 512, sy = Math.random() * 512;
       c.moveTo(sx, sy);
@@ -70,6 +71,7 @@ window.ABYSS = window.ABYSS || {};
     tex.needsUpdate = true;
     return tex;
   }
+
 
   /* ─────────────────────────────────────────────────────────────────────────
      PROCEDURAL CAUSTIC TEXTURE  (512 × 512, offscreen canvas 2D)
@@ -125,63 +127,93 @@ window.ABYSS = window.ABYSS || {};
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
-     ORGANIC SEABED — 200 × 200 PlaneGeometry, 80×80 segments.
-     Vertex Y displacement applied ONCE at build time (static geometry):
-       Layer A: Large rolling dunes   (low  freq, high  amp  ≈ ±1.8 u)
-       Layer B: Medium ridge ripples  (mid  freq, mid   amp  ≈ ±0.9 u)
-       Layer C: Fine surface texture  (high freq, small amp  ≈ ±0.3 u)
-       Layer D: Random micro-scatter  (per-vertex noise ≈ ±0.12 u)
-     After displacement: computeVertexNormals() for correct shading.
-     Material: MeshStandardMaterial with sandTex map + causticTex emissiveMap.
+     PHOTOREALISTIC SEABED — 200×200 PlaneGeometry, 120×120 segments.
+     (121×121 = 14,641 vertices — displaced ONCE at build time, no per-frame cost)
+
+     Five displacement layers for abyssal topography:
+       Layer A: Macro shelf rolls       (very low  freq, highest amp  ≈ ±2.4 u)
+       Layer B: Rocky ridge crests      (low-mid   freq, mid    amp  ≈ ±1.1 u)
+       Layer C: Sand ripple detail      (mid-high  freq, small  amp  ≈ ±0.4 u)
+       Layer D: Per-vertex micro-noise  (deterministic hash     ≈ ±0.14 u)
+       Layer E: Deep trench macro slope (very low  freq, large  amp  ≈ ±3.2 u)
+                ↳ Adds abyssal troughs and elevated plateaus to the playfield.
+
+     Vertex colour shading — hollow vs crest:
+       After computing the total displacement each vertex is assigned an RGB
+       colour via smoothstep:  dark blue silt (hollows)  →  lighter grey-blue
+       (crests). Material uses vertexColors:true so the per-vertex colour
+       multiplies the sandTex map for combined micro-detail + macro shading.
+       Zero extra draw call. Zero shader recompilation.
+
+     After displacement: computeVertexNormals() for physically correct shading.
   ───────────────────────────────────────────────────────────────────────── */
   function _buildSeabed() {
     var sandTex = _makeSandTex();
     sandTex.wrapS = sandTex.wrapT = THREE.RepeatWrapping;
-    sandTex.repeat.set(10, 10);
+    sandTex.repeat.set(14, 14);   // finer tiling on denser mesh
 
     var causticTex = _makeCausticTex();
 
-    // 80 × 80 segments → (81 × 81) = 6,561 vertices — good organic curvature
-    var geo = new THREE.PlaneGeometry(200, 200, 80, 80);
+    // 120×120 segments → 14,641 vertices for smooth photorealistic curvature
+    var geo = new THREE.PlaneGeometry(200, 200, 120, 120);
 
-    // PlaneGeometry is XY-plane by default; we'll rotate the mesh −90° X,
-    // so the displacement must go into the Z attribute here (becomes Y after rotation).
     var positions = geo.attributes.position;
-    for (var vi = 0; vi < positions.count; vi++) {
-      var wx = positions.getX(vi);   // world X after rotation
-      var wy = positions.getY(vi);   // world Z after rotation (mesh is rotated)
+    var vertCount = positions.count;
+    var colors    = new Float32Array(vertCount * 3);   // per-vertex RGB
 
-      // Layer A — large rolling dunes
-      var dA = Math.sin(wx * 0.045 + 0.7) * Math.cos(wy * 0.038 + 1.1) * 1.8;
-      // Layer B — medium ridges
-      var dB = Math.sin(wx * 0.095 + wy * 0.078 + 2.4) * 0.9;
-      // Layer C — fine surface ripples
-      var dC = Math.cos(wx * 0.22 - wy * 0.19 + 3.7) * 0.3;
-      // Layer D — pseudo-random micro-scatter (deterministic per-vertex)
+    for (var vi = 0; vi < vertCount; vi++) {
+      var wx = positions.getX(vi);   // X in plane space (= world X after rotation)
+      var wy = positions.getY(vi);   // Y in plane space (= world Z after rotation)
+
+      // Layer A — broad continental shelf rolls
+      var dA = Math.sin(wx * 0.045 + 0.7) * Math.cos(wy * 0.038 + 1.1) * 2.4;
+      // Layer B — rocky ridge crests
+      var dB = Math.sin(wx * 0.095 + wy * 0.078 + 2.4) * 1.1;
+      // Layer C — sand ripple micro-detail
+      var dC = Math.cos(wx * 0.22 - wy * 0.19 + 3.7) * 0.4;
+      // Layer D — deterministic per-vertex pseudo-noise (hash, no random())
       var seed = Math.sin(wx * 127.1 + wy * 311.7) * 43758.5453;
-      var dD = (seed - Math.floor(seed) - 0.5) * 0.24;
+      var dD   = (seed - Math.floor(seed) - 0.5) * 0.28;
+      // Layer E — deep trench / plateau macro-relief (very low frequency)
+      var dE = Math.sin(wx * 0.018 + 1.9) * Math.cos(wy * 0.014 + 0.6) * 3.2;
 
-      var disp = dA + dB + dC + dD;
-      // Z-axis displacement (becomes Y-depth after mesh rotation)
+      var disp = dA + dB + dC + dD + dE;
+
+      // Z displacement → becomes world Y depth after mesh -90° X rotation
       positions.setZ(vi, disp);
+
+      // ── Vertex colour: dark silt hollow → lighter grey-blue crest ───────
+      // Displacement range is roughly -7 to +7; normalise to [0, 1].
+      var t = Math.max(0, Math.min(1, (disp + 7) / 14));
+      t = t * t * (3 - 2 * t);   // smoothstep — soft S-curve blend
+
+      // Hollow colour  (t≈0): very dark blue-grey silt  ~hsl(220,28%,11%)
+      // Crest colour   (t≈1): medium grey-blue sediment ~hsl(215,18%,24%)
+      colors[vi * 3]     = 0.07 + t * 0.13;   // R: 0.07 → 0.20
+      colors[vi * 3 + 1] = 0.10 + t * 0.12;   // G: 0.10 → 0.22
+      colors[vi * 3 + 2] = 0.15 + t * 0.12;   // B: 0.15 → 0.27
     }
+
     positions.needsUpdate = true;
-    geo.computeVertexNormals();   // recompute normals after displacement
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();   // recompute normals post-displacement
 
     _causticMat = new THREE.MeshStandardMaterial({
-      map: sandTex,
-      emissiveMap: causticTex,
-      emissive: new THREE.Color(0x001a33),
-      roughness: 0.92,
-      metalness: 0.0
+      map:          sandTex,
+      vertexColors: true,          // free per-vertex colour, no extra pass
+      emissiveMap:  causticTex,
+      emissive:     new THREE.Color(0x001220),
+      roughness:    0.94,
+      metalness:    0.0
     });
 
     var bed = new THREE.Mesh(geo, _causticMat);
-    bed.rotation.x = -Math.PI / 2;
-    bed.position.y = -8;
+    bed.rotation.x    = -Math.PI / 2;
+    bed.position.y    = -8;
     bed.receiveShadow = false;
     _scene.add(bed);
   }
+
 
   /* ─────────────────────────────────────────────────────────────────────────
      KELP STALK — GPU sinusoidal current sway via GLSL vertex shader.
@@ -482,6 +514,77 @@ window.ABYSS = window.ABYSS || {};
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
+     SPHERICAL BUBBLES — Procedural Radial Texture
+     Creates a soft circular gradient: transparent center, refractive rim glow,
+     and soft outer fade. Maps to a standard PointsMaterial to render perfect
+     spheres without writing custom fragment shaders or using cubes.
+  ───────────────────────────────────────────────────────────────────────── */
+  function _makeBubbleTex() {
+    var cv = document.createElement('canvas');
+    cv.width = 64; cv.height = 64;
+    var c = cv.getContext('2d');
+
+    var cx = 32, cy = 32, r = 32;
+    var grad = c.createRadialGradient(cx, cy, r * 0.4, cx, cy, r);
+    // Center is almost fully transparent (liquid inside)
+    grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.05)');
+    // Refractive rim glow
+    grad.addColorStop(0.7, 'rgba(255, 255, 255, 0.6)');
+    // Soft outer feathering
+    grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+
+    c.fillStyle = grad;
+    c.fillRect(0, 0, 64, 64);
+
+    var tex = new THREE.CanvasTexture(cv);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     BUBBLE SYSTEM — 200 particles
+     Uses the radial texture to draw soft spheres.
+  ───────────────────────────────────────────────────────────────────────── */
+  function _buildBubbles() {
+    var COUNT = 200; // TUNE: 80-400 bubbles based on desired density
+    var geo = new THREE.BufferGeometry();
+    var pos = new Float32Array(COUNT * 3);
+    var vel = new Float32Array(COUNT);
+    var phase = new Float32Array(COUNT);
+    var wobble = new Float32Array(COUNT);
+
+    // Spawn bubbles in a localized volume (player view area)
+    for (var i = 0; i < COUNT; i++) {
+      pos[i * 3]     = (Math.random() - 0.5) * 40;     // X span
+      pos[i * 3 + 1] = -8 + Math.random() * 28;        // Y height (floor to +20)
+      pos[i * 3 + 2] = -10 - Math.random() * 60;       // Z depth
+
+      // Buoyancy / rise speed (u/frame)
+      vel[i] = 0.025 + Math.random() * 0.035;          // TUNE: rise speed
+      phase[i] = Math.random() * Math.PI * 2;
+      wobble[i] = 0.006 + Math.random() * 0.010;       // TUNE: lateral drift
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+    var mat = new THREE.PointsMaterial({
+      color: 0xccffff,
+      size: 0.55,           // TUNE: bubble scale
+      map: _makeBubbleTex(),
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    _bubbles = new THREE.Points(geo, mat);
+    _bubbles.userData.vel = vel;
+    _bubbles.userData.phase = phase;
+    _bubbles.userData.wobble = wobble;
+    _bubbles.userData.count = COUNT;
+    _scene.add(_bubbles);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
      build — scene assembly entry point
      Returns { airlock, conduit } for main.js to wire into interactables.
   ───────────────────────────────────────────────────────────────────────── */
@@ -490,21 +593,28 @@ window.ABYSS = window.ABYSS || {};
     _anemones = [];
     _kelpMaterials = [];
     _particles = null;
+    _bubbles = null;
     _interactable = null;
     _conduitMesh = null;
     _causticMat = null;
     _causticReefMat = null;
 
-    // Bioluminescent deep-water fog
-    scene.fog = new THREE.FogExp2(0x041a2e, 0.018);
-    scene.background = new THREE.Color(0x041a2e);
+    // Bioluminescent deep-water fog — denser, darker abyssal blue
+    scene.fog = new THREE.FogExp2(0x021324, 0.020);
+    scene.background = new THREE.Color(0x021324);
 
     // Lighting rig
-    scene.add(new THREE.AmbientLight(0x0d2040, 1.6));
+    scene.add(new THREE.AmbientLight(0x0b2540, 1.8));
 
-    var sun = new THREE.DirectionalLight(0x4488bb, 0.85);
+    // Surface light attenuation / weak god-rays
+    var sun = new THREE.DirectionalLight(0x3377aa, 0.6);
     sun.position.set(5, 30, -10);
     scene.add(sun);
+
+    // Downward fill light (softly illuminates seabed hollows from depth)
+    var fill = new THREE.DirectionalLight(0x0a2035, 0.3);
+    fill.position.set(0, -1, 0); // pointing straight down
+    scene.add(fill);
 
     var ca1 = new THREE.PointLight(0x00ffaa, 1.2, 18);
     ca1.position.set(-8, -4, -18);
@@ -552,6 +662,7 @@ window.ABYSS = window.ABYSS || {};
     _buildShipwreck(-22, -5, -48);
     var stationResult = _buildStation(0, -4, -58);
     _buildParticles();
+    _buildBubbles();
 
     return stationResult;   // { airlock, conduit }
   }
@@ -608,6 +719,31 @@ window.ABYSS = window.ABYSS || {};
       _particles.geometry.attributes.position.needsUpdate = true;
     }
 
+    // Bubbles — upward buoyancy + lateral wobble
+    if (_bubbles) {
+      var bPos = _bubbles.geometry.attributes.position.array;
+      var bVel = _bubbles.userData.vel;
+      var bPhase = _bubbles.userData.phase;
+      var bWobble = _bubbles.userData.wobble;
+      var BCOUNT = _bubbles.userData.count;
+
+      for (var bi = 0; bi < BCOUNT; bi++) {
+        // Buoyancy
+        bPos[bi * 3 + 1] += bVel[bi];
+        // Lateral wobble (X/Z sine drift)
+        bPos[bi * 3]     += Math.sin(t * 1.2 + bPhase[bi]) * bWobble[bi];
+        bPos[bi * 3 + 2] += Math.cos(t * 0.9 + bPhase[bi] * 1.4) * bWobble[bi];
+
+        // Wrap-around
+        if (bPos[bi * 3 + 1] > 20) {
+          bPos[bi * 3 + 1] = -8 - Math.random() * 4;
+          bPos[bi * 3]     = (Math.random() - 0.5) * 40;
+          bPos[bi * 3 + 2] = -10 - Math.random() * 60;
+        }
+      }
+      _bubbles.geometry.attributes.position.needsUpdate = true;
+    }
+
     // Anemone tentacle sway
     for (var j = 0; j < _anemones.length; j++) {
       var an = _anemones[j];
@@ -622,6 +758,7 @@ window.ABYSS = window.ABYSS || {};
   function reset() {
     _scene = null;
     _particles = null;
+    _bubbles = null;
     _anemones = [];
     _kelpMaterials = [];
     _interactable = null;
