@@ -139,18 +139,24 @@ html, body {
 
 #overlay,
 #endOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 16px;
-}
-
-#overlay {
-  background: radial-gradient(ellipse at 50% 40%, #020e1f 0%, #000508 75%);
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  align-items: center !important;
+  padding: 10px 14px !important;
+  box-sizing: border-box !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  z-index: 100000 !important;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  background: radial-gradient(circle at center, rgba(3, 18, 43, 0.95), rgba(1, 6, 15, 0.98));
 }
 
 #endOverlay {
@@ -161,7 +167,9 @@ html, body {
 
 #overlay.hidden,
 #endOverlay.hidden {
-  display: none;
+  display: none !important;
+  pointer-events: none !important;
+  z-index: -1 !important;
 }
 
 /* Animated bg particles canvas sits inside #overlay */
@@ -182,16 +190,19 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 0;
   max-width: 540px;
   width: 100%;
-  padding: 40px 32px;
+  max-height: max-content;
+  padding: 10px 14px;
   background: var(--glass);
   border: 1px solid var(--border);
   border-radius: 4px;
   box-shadow:
     0 0 40px rgba(0, 255, 204, 0.06),
     inset 0 0 60px rgba(0, 255, 204, 0.03);
+  overflow: visible;
 }
 
 .end-card {
@@ -359,6 +370,157 @@ html, body {
   50%       { opacity: 0.35; }
 }
 
+/* ─── Compact UI Fixes ──────────────────────────────────────────────────────── */
+@media (max-width: 600px), (max-height: 900px) {
+  .menu-title {
+    font-size: 1.4rem !important;
+    margin: 2px 0 !important;
+    letter-spacing: 4px !important;
+  }
+
+  .menu-brief {
+    font-size: 0.75rem !important;
+    line-height: 1.2 !important;
+    margin: 4px 0 !important;
+    max-width: 90% !important;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .inst-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 4px !important;
+    width: 100% !important;
+    max-width: 360px !important;
+    margin: 4px 0 !important;
+  }
+
+  .inst-cell {
+    padding: 4px 6px !important;
+    margin: 0 !important;
+    font-size: 0.65rem !important;
+    border-radius: 4px !important;
+  }
+
+  .inst-key {
+    font-size: 0.7rem !important;
+    margin: 0 0 2px 0 !important;
+  }
+
+  .cta-btn {
+    width: auto !important;
+    min-width: 160px !important;
+    padding: 10px 24px !important;
+    font-size: 1rem !important;
+    font-weight: bold !important;
+    margin: 8px 0 6px 0 !important;
+    background: #00ffcc !important;
+    color: #01111e !important;
+    border: none !important;
+    border-radius: 25px !important;
+    box-shadow: 0 0 15px rgba(0, 255, 204, 0.6) !important;
+    cursor: pointer !important;
+    flex-shrink: 0 !important;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 900px) {
+  .inst-grid {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+  .menu-brief {
+    display: none !important;
+  }
+}
+
 /* ─── Utility ───────────────────────────────────────────────────────────────── */
 
 .hidden { display: none !important; }
+/* --- DOM HUD LAYER (Strict CSS Spatial Zones) ------------------------------ */
+.hud-panel {
+  position: fixed;
+  background: rgba(2, 10, 24, 0.75);
+  border: 1px solid rgba(0, 255, 204, 0.25);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #00ffcc;
+  font-family: var(--font-hud);
+  z-index: 999999;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  text-shadow: 0 0 6px rgba(0, 255, 204, 0.6);
+}
+
+/* Top-Left (Vision & Telemetry Status) */
+.hud-top-left {
+  top: 12px;
+  left: 12px;
+  right: auto;
+  bottom: auto;
+  font-size: 0.85rem;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Top-Center (Heading Compass & Oxygen Gauge) */
+.hud-top-center {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 35%;
+  min-width: 30%;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+/* Bottom-Right (Sonar Radar Minimap) */
+.hud-radar {
+  position: fixed;
+  bottom: 14px;
+  right: 14px;
+  top: auto;
+  left: auto;
+  width: 85px;
+  height: 85px;
+  border-radius: 50%;
+  background: rgba(0, 50, 50, 0.5);
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  z-index: 999999;
+  pointer-events: none;
+}
+
+/* Bottom-Left (Mission Objectives Tracker) */
+.hud-bottom-left {
+  bottom: 14px;
+  left: 14px;
+  top: auto;
+  right: auto;
+  min-width: 160px;
+  max-width: 190px;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: #e0f7fa;
+}
+
+/* Dead Center (Gaze Reticle & Scanning Feedback) */
+.hud-center {
+  top: 58%;
+  left: 50%;
+  transform: translateX(-50%);
+  right: auto;
+  bottom: auto;
+  max-width: 220px;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  word-wrap: break-word;
+  white-space: normal;
+}

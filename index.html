@@ -6,8 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com;">
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com https://cdn.jsdelivr.net https://storage.googleapis.com;
+    script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
+    worker-src 'self' blob: data:;
+    connect-src 'self' blob: data: https://cdn.jsdelivr.net https://storage.googleapis.com;
+    img-src 'self' data: blob: https:;
+    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com;
+    font-src 'self' data: https://fonts.gstatic.com;
+  ">
   <meta name="description"
     content="ABYSS: Marine Explorer — Immersive side-by-side VR underwater exploration. Scan marine life, collect pollution, unlock the research station.">
   <title>ABYSS: Marine Explorer</title>
@@ -26,12 +33,69 @@
   </div>
 
   <!-- ══════════════════════════════════════════
-       CANVAS STACK
-       #vrCanvas: position:fixed fills Capacitor WebView
-       #hudCanvas: dynamic reticle + numeric readouts
+       VISION INIT HUD (Visible during loading)
        ══════════════════════════════════════════ -->
-  <canvas id="vrCanvas"></canvas>
-  <canvas id="hudCanvas"></canvas>
+  <div id="vision-hud" style="position:fixed;top:10px;left:10px;background:rgba(0,0,0,0.6);color:#00ffcc;font-family:monospace;font-size:11px;padding:4px 8px;border-radius:4px;z-index:999999;pointer-events:none;">Model: Init...</div>
+
+  <!-- ══════════════════════════════════════════
+       GAME HUD LAYER (Hidden on start)
+       ══════════════════════════════════════════ -->
+  <div id="game-hud" style="display: none !important; position: absolute; inset: 0; pointer-events: none; z-index: 20;">
+    <canvas id="hudCanvas" style="position: absolute; inset: 0; width: 100vw; height: 100vh; pointer-events: none;"></canvas>
+    
+    <!-- Mission Panels (Stereo) -->
+    <style>
+      .mission-panel {
+        position: absolute;
+        bottom: 12px;
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 5px;
+        padding: 2px 5px;
+        max-width: 125px;
+        max-height: 110px;
+        overflow-y: hidden;
+        overflow-x: hidden;
+        font-family: "Share Tech Mono", monospace;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 0.45rem;
+        line-height: 1.05;
+        z-index: 21;
+        pointer-events: none;
+        white-space: normal;
+        word-break: break-word;
+      }
+      .mission-header {
+        font-size: 0.52rem;
+        font-weight: bold;
+        color: #fff;
+        margin-bottom: 2px;
+        border-bottom: 1px solid rgba(255,255,255,0.2);
+        padding-bottom: 1px;
+        text-transform: uppercase;
+      }
+      .mission-item {
+        white-space: normal;
+        margin-bottom: 1px;
+      }
+      .mission-icon {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        font-size: 0.5rem;
+        text-align: center;
+        line-height: 8px;
+      }
+      .mission-done {
+        color: #00ffcc;
+      }
+      .mission-count {
+        float: right;
+        opacity: 0.8;
+      }
+    </style>
+    <div id="mission-hud-left" class="mission-panel" style="right: calc(50% + 12px);"></div>
+    <div id="mission-hud-right" class="mission-panel" style="right: 12px;"></div>
+  </div>
 
   <!-- ══════════════════════════════════════════
        HELMET VIGNETTE OVERLAY — static SVG layer
@@ -77,6 +141,7 @@
     <canvas id="bgParticles"></canvas>
 
     <div class="menu-card">
+      <img src="./TMRT_logo.jpg" alt="TMRT Abyss Explorer" style="max-width: 200px; height: auto; display: block; margin: 0 auto 15px auto; border-radius: 12px; border: 1.5px solid rgba(0, 255, 204, 0.4); box-shadow: 0 4px 15px rgba(0, 255, 204, 0.2);">
       <div class="menu-eyebrow">DEEP SEA MISSION</div>
       <h1 class="menu-title">ABYSS</h1>
       <p class="menu-sub">MARINE EXPLORER</p>
@@ -90,8 +155,9 @@
       </p>
 
       <div class="inst-grid">
-        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag or tilt device to explore</div>
-        <div class="inst-cell"><span class="inst-key">SWIM</span>Nose-down gaze (−18° to −38°)</div>
+        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag / tilt device to aim</div>
+        <div class="inst-cell"><span class="inst-key">SWIM</span>W / ↑ forward &nbsp;·&nbsp; S / ↓ backward</div>
+        <div class="inst-cell"><span class="inst-key">VERTICAL</span>Space ascend &nbsp;·&nbsp; C / Shift descend</div>
         <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 2 s</div>
         <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · conduit · station</div>
       </div>
@@ -113,6 +179,11 @@
   </div>
 
   <!-- ══════════════════════════════════════════
+       CAMERA VIDEO (INVISIBLE) FOR HAND TRACKING
+       ══════════════════════════════════════════ -->
+  <video id="webcam" autoplay playsinline style="display: none;"></video>
+
+  <!-- ══════════════════════════════════════════
        SCRIPTS — dependency order
        Three.js r128 via CDN (relative-path compatible)
        ══════════════════════════════════════════ -->
@@ -120,6 +191,7 @@
   <script src="js/audio.js"></script>
   <script src="js/environment.js"></script>
   <script src="js/entities.js"></script>
+  <script type="module" src="js/handTracker.js"></script>
   <script src="js/controls.js"></script>
   <script src="js/main.js"></script>
 
