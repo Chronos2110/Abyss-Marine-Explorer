@@ -1,5 +1,5 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — css/style.css  v3
+   ABYSS: Marine Explorer — css/style.css  v5
    Cyber-nautical full-bleed design system.
    Static layer: helmet vignette, condensation overlays.
    Dynamic layer: hudCanvas (canvas 2D — zero DOM reflow).
@@ -23,8 +23,8 @@
   --abyss:   #041a2e;
   --warn:    #ff4444;
   --amber:   #ffaa00;
-  --glass:   rgba(4, 27, 51, 0.82);
-  --border:  rgba(0, 255, 204, 0.22);
+  --glass:   rgba(4, 27, 51, 0.86);
+  --border:  rgba(0, 255, 204, 0.28);
   --font-hud: 'Share Tech Mono', 'Courier New', monospace;
   --font-ui:  'Orbitron', 'Courier New', monospace;
 }
@@ -65,6 +65,66 @@ html, body {
   z-index: 20;
 }
 
+/* #sonarCanvasL, #sonarCanvasR: Symmetrical Binocular Sonar Radar Panels */
+#sonarCanvasL {
+  position: fixed;
+  bottom: 12px;
+  left: calc(50% - 110px);
+  width: 90px;
+  height: 90px;
+  pointer-events: none;
+  z-index: 25;
+  display: none;
+}
+
+#sonarCanvasR {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  width: 90px;
+  height: 90px;
+  pointer-events: none;
+  z-index: 25;
+  display: none;
+}
+
+/* ─── In-Game Surface / Quit Button ────────────────────────────────────────── */
+.quit-hud-btn {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(4, 27, 51, 0.88);
+  border: 1px solid rgba(0, 255, 204, 0.35);
+  color: var(--cyan);
+  font-family: var(--font-ui);
+  font-size: clamp(0.55rem, 1.5vw, 0.72rem);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  padding: 6px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 0 12px rgba(0, 255, 204, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s ease-out;
+}
+
+.quit-hud-btn:hover {
+  background: rgba(0, 255, 204, 0.25);
+  color: #fff;
+  box-shadow: 0 0 20px rgba(0, 255, 204, 0.6);
+}
+
+.quit-hud-btn:active {
+  transform: translateX(-50%) scale(0.95);
+}
+
 /* ─── Helmet Vignette Overlay ───────────────────────────────────────────────
    Static layer above vrCanvas (z:1), below hudCanvas (z:20).
    Radial vignette via ::before; SVG frame/streaks in child SVG element.
@@ -76,7 +136,6 @@ html, body {
   inset: 0;
   z-index: 10;
   pointer-events: none;
-  /* Dark oval vignette — feathers inward ~18% from all edges, 80% opacity */
   background:
     radial-gradient(
       ellipse 70% 65% at 50% 50%,
@@ -137,6 +196,7 @@ html, body {
 
 /* ─── Overlay Shell ─────────────────────────────────────────────────────────── */
 
+#startOverlay,
 #overlay,
 #endOverlay {
   position: fixed;
@@ -146,35 +206,38 @@ html, body {
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: 16px;
+  padding: clamp(8px, 2vh, 18px) clamp(10px, 3vw, 20px);
+  box-sizing: border-box;
 }
 
+#startOverlay,
 #overlay {
-  background: radial-gradient(ellipse at 50% 40%, #020e1f 0%, #000508 75%);
+  background: radial-gradient(ellipse at 50% 35%, #03152d 0%, #010814 65%, #00040a 100%);
 }
 
 #endOverlay {
-  background: rgba(2, 10, 24, 0.88);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(2, 10, 24, 0.90);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
+#startOverlay.hidden,
 #overlay.hidden,
 #endOverlay.hidden {
-  display: none;
+  display: none !important;
 }
 
-/* Animated bg particles canvas sits inside #overlay */
+/* Animated bg particles canvas sits inside #startOverlay / #overlay */
 #bgParticles {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
-  opacity: 0.35;
+  opacity: 0.40;
 }
 
-/* ─── Menu Card ─────────────────────────────────────────────────────────────── */
+/* ─── Menu Card (Clean Portrait Mode - No Scroll) ───────────────────────────── */
 
 .menu-card {
   position: relative;
@@ -182,74 +245,100 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0;
-  max-width: 540px;
+  justify-content: center;
+  max-width: 440px;
   width: 100%;
-  padding: 40px 32px;
+  max-height: 98vh;
+  max-height: 98dvh;
+  padding: clamp(14px, 2.5vh, 26px) clamp(16px, 4vw, 26px);
   background: var(--glass);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 8px;
   box-shadow:
-    0 0 40px rgba(0, 255, 204, 0.06),
-    inset 0 0 60px rgba(0, 255, 204, 0.03);
+    0 0 35px rgba(0, 255, 204, 0.09),
+    0 0 70px rgba(0, 170, 255, 0.05),
+    inset 0 0 50px rgba(0, 255, 204, 0.03);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-sizing: border-box;
 }
 
 .end-card {
   gap: 12px;
 }
 
+/* ─── TMRT Team Logo (Screen blend mode to blend black background) ─────────── */
+
+.menu-logo {
+  display: block;
+  width: clamp(140px, 44vw, 210px);
+  max-width: 82%;
+  height: auto;
+  margin: 0 auto clamp(6px, 1.3vh, 12px);
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 14px rgba(0, 255, 204, 0.40));
+  pointer-events: none;
+  user-select: none;
+  flex-shrink: 0;
+}
+
 /* ─── Menu Typography ───────────────────────────────────────────────────────── */
 
 .menu-eyebrow {
   font-family: var(--font-ui);
-  font-size: 0.6rem;
+  font-size: clamp(0.50rem, 1.6vw, 0.60rem);
   letter-spacing: 0.35em;
-  color: rgba(0, 170, 255, 0.7);
+  color: rgba(0, 170, 255, 0.85);
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: clamp(2px, 0.5vh, 4px);
+  flex-shrink: 0;
 }
 
 .menu-title {
   font-family: var(--font-ui);
-  font-size: clamp(2.8rem, 9vw, 5.5rem);
+  font-size: clamp(2.2rem, 8vw, 3.4rem);
   font-weight: 900;
-  letter-spacing: 0.3em;
+  letter-spacing: 0.28em;
   color: var(--cyan);
   line-height: 1;
   text-shadow:
-    0 0 28px rgba(0, 255, 204, 0.8),
-    0 0 60px rgba(0, 170, 255, 0.4);
-  margin-bottom: 4px;
+    0 0 24px rgba(0, 255, 204, 0.8),
+    0 0 50px rgba(0, 170, 255, 0.4);
+  margin-bottom: clamp(2px, 0.4vh, 4px);
   animation: titlePulse 4s ease-in-out infinite;
+  flex-shrink: 0;
 }
 
 @keyframes titlePulse {
-  0%, 100% { text-shadow: 0 0 28px rgba(0,255,204,0.7), 0 0 55px rgba(0,170,255,0.35); }
-  50%       { text-shadow: 0 0 50px rgba(0,255,204,1.0), 0 0 90px rgba(0,170,255,0.6), 0 0 130px rgba(0,80,255,0.3); }
+  0%, 100% { text-shadow: 0 0 24px rgba(0,255,204,0.7), 0 0 50px rgba(0,170,255,0.35); }
+  50%       { text-shadow: 0 0 45px rgba(0,255,204,1.0), 0 0 85px rgba(0,170,255,0.6), 0 0 120px rgba(0,80,255,0.3); }
 }
 
 .menu-sub {
   font-family: var(--font-ui);
-  font-size: clamp(0.55rem, 2vw, 0.78rem);
-  letter-spacing: 0.45em;
-  color: rgba(79, 195, 247, 0.8);
+  font-size: clamp(0.48rem, 1.8vw, 0.65rem);
+  letter-spacing: 0.38em;
+  color: rgba(79, 195, 247, 0.85);
   text-transform: uppercase;
-  margin-bottom: 20px;
+  margin-bottom: clamp(6px, 1.2vh, 12px);
+  flex-shrink: 0;
 }
 
 .menu-divider {
   width: 100%;
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--border), var(--border), transparent);
-  margin-bottom: 20px;
+  margin-bottom: clamp(8px, 1.4vh, 14px);
+  flex-shrink: 0;
 }
 
 .menu-brief {
-  font-size: clamp(0.62rem, 1.8vw, 0.78rem);
-  color: rgba(178, 235, 242, 0.85);
-  line-height: 1.9;
-  margin-bottom: 20px;
-  letter-spacing: 0.04em;
+  font-size: clamp(0.54rem, 1.6vw, 0.68rem);
+  color: rgba(178, 235, 242, 0.88);
+  line-height: 1.50;
+  margin-bottom: clamp(8px, 1.5vh, 14px);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
 }
 
 /* ─── Instruction Grid ──────────────────────────────────────────────────────── */
@@ -257,55 +346,58 @@ html, body {
 .inst-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: clamp(4px, 0.8vh, 6px);
   width: 100%;
-  margin-bottom: 28px;
+  margin-bottom: clamp(10px, 1.8vh, 18px);
+  flex-shrink: 0;
 }
 
 .inst-cell {
   background: rgba(0, 255, 204, 0.04);
   border: 1px solid rgba(0, 255, 204, 0.12);
-  border-radius: 3px;
-  padding: 10px 12px;
-  font-size: 0.62rem;
-  color: rgba(178, 235, 242, 0.8);
-  line-height: 1.6;
+  border-radius: 4px;
+  padding: clamp(5px, 0.9vh, 8px) clamp(6px, 1.5vw, 10px);
+  font-size: clamp(0.50rem, 1.5vw, 0.60rem);
+  color: rgba(178, 235, 242, 0.82);
+  line-height: 1.40;
   text-align: left;
   transition: border-color 0.2s, background 0.2s;
 }
 
 .inst-cell:hover {
-  border-color: rgba(0, 255, 204, 0.3);
-  background: rgba(0, 255, 204, 0.07);
+  border-color: rgba(0, 255, 204, 0.35);
+  background: rgba(0, 255, 204, 0.08);
 }
 
 .inst-key {
   display: block;
   font-family: var(--font-ui);
-  font-size: 0.58rem;
+  font-size: clamp(0.48rem, 1.3vw, 0.54rem);
   font-weight: 700;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.14em;
   color: var(--cyan);
-  margin-bottom: 3px;
+  margin-bottom: 2px;
 }
 
-/* ─── CTA Button ────────────────────────────────────────────────────────────── */
+/* ─── CTA Button ("TAP TO DIVE") ───────────────────────────────────────────── */
 
 .cta-btn {
   font-family: var(--font-ui);
-  font-size: clamp(0.75rem, 2.5vw, 0.95rem);
+  font-size: clamp(0.72rem, 2.2vw, 0.86rem);
   font-weight: 700;
-  letter-spacing: 0.25em;
+  letter-spacing: 0.24em;
   color: var(--cyan);
   background: transparent;
   border: 1px solid var(--cyan);
-  padding: 14px 40px;
+  padding: clamp(10px, 1.6vh, 14px) clamp(26px, 6vw, 40px);
   cursor: pointer;
   position: relative;
   overflow: hidden;
   isolation: isolate;
+  border-radius: 4px;
   transition: color 0.22s, background 0.22s, box-shadow 0.22s;
   animation: btnPulse 3s ease-in-out infinite;
+  flex-shrink: 0;
 }
 
 .cta-btn::before {
@@ -350,10 +442,7 @@ html, body {
   letter-spacing: 0.04em;
 }
 
-/* ─── O₂ Bar Red-Pulse Keyframe (consumed by hudCanvas JS timing) ────────────
-   NOTE: actual O₂ bar is drawn on hudCanvas (canvas 2D, zero DOM reflow).
-   This keyframe is kept here for reference / future CSS-driven fallback.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* ─── O₂ Bar Red-Pulse Keyframe (consumed by hudCanvas JS timing) ──────────── */
 @keyframes o2Pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.35; }
@@ -362,3 +451,53 @@ html, body {
 /* ─── Utility ───────────────────────────────────────────────────────────────── */
 
 .hidden { display: none !important; }
+
+/* ─── Landscape Responsive Fallback (Compact Viewports) ─────────────────────── */
+
+@media (max-height: 520px) and (orientation: landscape) {
+  #startOverlay,
+  #overlay {
+    padding: 6px 12px;
+  }
+
+  .menu-card {
+    transform: scale(0.82);
+    transform-origin: center center;
+    max-height: 98vh;
+    padding: 12px 18px;
+  }
+
+  .menu-logo {
+    width: 140px;
+    margin-bottom: 4px;
+  }
+
+  .menu-title {
+    font-size: clamp(1.8rem, 6vw, 2.4rem);
+    margin-bottom: 2px;
+  }
+
+  .menu-brief {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 6px;
+    font-size: 0.52rem;
+  }
+
+  .inst-grid {
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .inst-cell {
+    padding: 4px 6px;
+    font-size: 0.50rem;
+  }
+
+  .cta-btn {
+    padding: 8px 24px;
+    font-size: 0.72rem;
+  }
+}

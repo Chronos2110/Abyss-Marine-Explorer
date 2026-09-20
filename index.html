@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta http-equiv="Content-Security-Policy"
@@ -27,11 +27,17 @@
 
   <!-- ══════════════════════════════════════════
        CANVAS STACK
-       #vrCanvas: position:fixed fills Capacitor WebView
-       #hudCanvas: dynamic reticle + numeric readouts
+       #vrCanvas: stereoscopic WebGL viewports
+       #hudCanvas: dynamic reticle + numeric readouts (zero DOM reflow)
+       #sonarCanvasL, #sonarCanvasR: dual-eye sonar radar panels
        ══════════════════════════════════════════ -->
   <canvas id="vrCanvas"></canvas>
   <canvas id="hudCanvas"></canvas>
+  <canvas id="sonarCanvasL" width="90" height="90"></canvas>
+  <canvas id="sonarCanvasR" width="90" height="90"></canvas>
+
+  <!-- In-game Surface / Quit Button -->
+  <button id="quitBtn" class="quit-hud-btn hidden">✕ &nbsp;SURFACE / QUIT</button>
 
   <!-- ══════════════════════════════════════════
        HELMET VIGNETTE OVERLAY — static SVG layer
@@ -40,8 +46,6 @@
        Condensation streaks are static — dynamic reticle stays on hudCanvas.
        ══════════════════════════════════════════ -->
   <div id="helmetOverlay" aria-hidden="true">
-    <!-- Oval vignette radial gradient — handled in CSS via ::before pseudo -->
-
     <!-- SVG frame arc + condensation streaks -->
     <svg id="helmetSVG" xmlns="http://www.w3.org/2000/svg"
          preserveAspectRatio="none" viewBox="0 0 1000 500">
@@ -60,8 +64,8 @@
       <!-- Right eye condensation streaks (upper-right quadrant) -->
       <line x1="568"  y1="18"  x2="560"  y2="90"  stroke="white" stroke-width="4" opacity="0.06"/>
       <line x1="602" y1="12"  x2="596"  y2="78"  stroke="white" stroke-width="3" opacity="0.05"/>
-      <line x1="640" y1="20"  x2="632" y2="82"  stroke="white" stroke-width="2" opacity="0.07"/>
-      <line x1="675" y1="14"  x2="671" y2="68"  stroke="white" stroke-width="3" opacity="0.04"/>
+      <line x1="640" y1="20"  x2="632"  y2="82"  stroke="white" stroke-width="2" opacity="0.07"/>
+      <line x1="675" y1="14"  x2="671"  y2="68"  stroke="white" stroke-width="3" opacity="0.04"/>
       <line x1="588"  y1="38"  x2="582"  y2="100" stroke="white" stroke-width="2" opacity="0.08"/>
 
       <!-- Center nose bridge divider — subtle vertical bar -->
@@ -71,12 +75,15 @@
   </div>
 
   <!-- ══════════════════════════════════════════
-       START / PERMISSION OVERLAY  (#overlay)
+       START / PERMISSION OVERLAY  (#startOverlay)
        ══════════════════════════════════════════ -->
-  <div id="overlay">
+  <div id="startOverlay">
     <canvas id="bgParticles"></canvas>
 
     <div class="menu-card">
+      <!-- TMRT Team Logo with mix-blend-mode: screen to blend into the deep-sea UI -->
+      <img src="assets/tmrt-logo.png" alt="TMRT — The Marine Robotics Team" class="menu-logo" id="tmrtLogo">
+
       <div class="menu-eyebrow">DEEP SEA MISSION</div>
       <h1 class="menu-title">ABYSS</h1>
       <p class="menu-sub">MARINE EXPLORER</p>
@@ -84,19 +91,19 @@
 
       <p class="menu-brief">
         Descend into a living deep-sea ecosystem.<br>
-        Scan five species, remove four pollution sources,<br>
-        activate the power conduit, and unlock the research station<br>
+        Scan six species, remove six pollution sources,<br>
+        restore two power conduits, and dock at the research station<br>
         before your oxygen runs out.
       </p>
 
       <div class="inst-grid">
-        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag or tilt device to explore</div>
-        <div class="inst-cell"><span class="inst-key">SWIM</span>Nose-down gaze (−18° to −38°)</div>
-        <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 2 s</div>
-        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · conduit · station</div>
+        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag, tilt, or palm gesture</div>
+        <div class="inst-cell"><span class="inst-key">SWIM</span>Open palm or nose-down gaze</div>
+        <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 1.2 s</div>
+        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>6 species · 6 pollution · 2 conduits · station</div>
       </div>
 
-      <button id="diveBtn" class="cta-btn">▼ &nbsp;DIVE IN&nbsp; ▼</button>
+      <button id="diveBtn" class="cta-btn">▼ &nbsp;TAP TO DIVE&nbsp; ▼</button>
     </div>
   </div>
 
@@ -120,6 +127,7 @@
   <script src="js/audio.js"></script>
   <script src="js/environment.js"></script>
   <script src="js/entities.js"></script>
+  <script src="js/hand_tracking.js"></script>
   <script src="js/controls.js"></script>
   <script src="js/main.js"></script>
 

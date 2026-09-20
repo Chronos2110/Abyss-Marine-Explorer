@@ -1,27 +1,27 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/controls.js  v9
-   1:1 Head Steering & Landscape Gyroscope Pipeline
+   ABYSS: Marine Explorer — js/controls.js
+   MODULE 1: Vision-Only Gyroscope & Pure Palm-Driven Locomotion Engine
 
    CRITICAL RUNTIME ARCHITECTURE:
-   - Controls.init(cameraRig, pitchObject, cameraL):
-     cameraL reference stored at module scope exclusively for direction sampling.
-   - Module-scoped allocations (Zero Runtime Allocation Rule):
-     _lookDir, _moveDir, _euler, _q0, _q1, _zee allocated once at parse time.
-   - Gyroscope Pipeline (ZXY — canonical W3C landscape):
-       Step 1: _euler.set(beta, alpha, -gamma, 'ZXY') → cameraRig.quaternion.setFromEuler()
-       Step 2: Right-multiply _q1 (constant -90° X) → cameraRig.quaternion.multiply(_q1)
-       Step 3: Right-multiply _q0 (dynamic screen orient on Z) → multiply(_q0)
-       pitchObject is zeroed and bypassed entirely.
-   - Touch lockout: pointermove immediately returns when gyroActive === true.
-   - Locomotion Zones (Y-component of normalized _lookDir):
-       HOVERING  : -0.20 <= y <= +0.30 → full stop, speeds lerp to 0
-       SWIMMING  : -0.65 <= y <  -0.20 → fwd 1.5→6.5 u/s ramp
-       Dead-band : -0.70 <= y <  -0.65 → fwd clamped at 6.5 u/s, no Y thrust
-       DIVING    :          y <  -0.70 → vert -2.5 u/s, reduced fwd 1.8 u/s
-       ASCENDING :          y >  +0.30 → vert +2.8 u/s, gentle 2.0 u/s fwd
-   - Forward translation: strictly XZ via _moveDir — zero Y-bleed.
-   - Vertical translation: applied directly to cameraRig.position.y.
-   - Position clamped: X [-40, 40], Y [-7.0, 8.0], Z [-60, 10].
+   1. Vision Only for Gyroscope:
+      - Head rotation (Pitch, Yaw, Roll) exclusively orients the camera.
+      - Full 360° unrestricted yaw via canonical W3C Euler 'YXZ' multiplied
+        by _q1 (-90° X device frame to Three.js world frame) and _q0 (screen orientation).
+      - Zero gyro-pitch locomotion: all code checking nose-down pitch for swimming/diving
+        or nose-up pitch for ascending is completely eliminated. Head tilt NEVER triggers movement.
+   2. Pure Palm-Driven Locomotion:
+      - Forward locomotion is triggered ONLY when:
+          window.ABYSS.HandTracker.isPalmActive === true
+      - Target horizontal forward speed:
+          Active   : 3.8 units/second (lerped smoothly via delta * 3.5)
+          Inactive : 0.0 units/second
+      - Movement is strictly projected onto the horizontal X-Z plane:
+          _moveDir.set(_lookDir.x, 0, _lookDir.z).normalize()
+        The player swims horizontally in whichever direction their head is facing,
+        without sinking or floating due to vertical head angle.
+   3. Zero Garbage Collection:
+      - Pre-allocated module-level math objects (_euler, _q0, _q1, _zee, _lookDir, _moveDir).
+      - Delta time clamped to 0.05s per frame (prevents simulation tunneling).
    ============================================================================= */
 
 window.ABYSS = window.ABYSS || {};
@@ -29,110 +29,87 @@ window.ABYSS = window.ABYSS || {};
 (function () {
   'use strict';
 
-  /* ─── Locomotion constants ───────────────────────────────────────────────── */
-  var WASD_SPEED = 8.5;        // WASD desktop debug speed (units/sec)
+  /* ─── Locomotion Constants ───────────────────────────────────────────────── */
+  var PALM_SWIM_SPEED = 3.8;                          // Target speed when palm is active (units/sec)
+  var WASD_SPEED      = 8.5;                          // Desktop keyboard debug speed (units/sec)
 
-  /* ─── Module-scope scene references ─────────────────────────────────────── */
-  var cameraRig   = null;
-  var pitchObject = null;
-  var cameraL     = null;      // left-eye camera — sole source of world direction
+  /* ─── Module-Scope Scene References ─────────────────────────────────────── */
+  var cameraRig    = null;                            // Holds translation + orientation
+  var pitchObject  = null;                            // Child group of rig
+  var activeCamera = null;                            // Active eye camera (cameraL) for gaze direction
 
-  /* ─── Module-scope cached allocations — Zero per-frame GC ───────────────── */
-  // Gyro working objects
-  var _zee   = new THREE.Vector3(0, 0, 1);           // Z-axis for screen orient correction
-  var _euler = new THREE.Euler();                     // reused every orientation event
-  var _q0    = new THREE.Quaternion();               // screen orientation compensation
-  var _q1    = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2); // -90° X, constant
+  /* ─── Module-Scope Pre-Allocated Math Objects (Zero Runtime GC) ─────────── */
+  var _euler   = new THREE.Euler();
+  var _q0      = new THREE.Quaternion();
+  var _q1      = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90 deg on X
+  var _zee     = new THREE.Vector3(0, 0, 1);
+  var _lookDir = new THREE.Vector3();
+  var _moveDir = new THREE.Vector3();
 
-  // Locomotion working objects
-  var _lookDir = new THREE.Vector3();                // world-space gaze direction from cameraL
-  var _moveDir = new THREE.Vector3();                // XZ-only forward translation vector
+  /* ─── Tracking & Orientation State ───────────────────────────────────────── */
+  var gyroActive = false;
 
-  /* ─── Per-frame locomotion state ────────────────────────────────────────── */
-  var _currentFwdSpeed  = 0;   // lerped horizontal swim speed (units/sec)
-  var _currentVertSpeed = 0;   // lerped vertical speed (units/sec, signed)
-  var swimState         = 'HOVERING';
-  var gyroActive        = false;
-  var isPointerDown     = false;
+  /* ─── Locomotion Speeds & State ──────────────────────────────────────────── */
+  var _currentFwdSpeed = 0;
+  var swimState        = 'HOVERING';
+  var velocity         = new THREE.Vector3();
 
-  /* ─── Desktop drag state ─────────────────────────────────────────────────── */
-  var _keys       = {};
-  var _lastX      = 0;
-  var _lastY      = 0;
-  var _yaw        = 0;
-  var _pitchAngle = 0;
-
-  /* ─── Public velocity vector — kept for API compatibility ────────────────── */
-  // velocity.x/.z are informational (fwd * lookDir components).
-  // velocity.y mirrors _currentVertSpeed for external callers (HUD, audio, etc.).
-  var velocity = new THREE.Vector3();
+  /* ─── Desktop Pointer Fallback State ─────────────────────────────────────── */
+  var _keys         = {};
+  var isPointerDown = false;
+  var _lastX        = 0;
+  var _lastY        = 0;
+  var _rotY         = 0;
+  var _rotX         = 0;
 
   /* ═══════════════════════════════════════════════════════════════════════════
      _clampRig()
-     Enforce world-space position boundaries on cameraRig.
+     Enforces world boundaries on cameraRig within the 200x200 seabed terrain.
      ═══════════════════════════════════════════════════════════════════════════ */
   function _clampRig() {
     if (!cameraRig) return;
-    cameraRig.position.x = THREE.MathUtils.clamp(cameraRig.position.x, -40,  40);
-    cameraRig.position.y = THREE.MathUtils.clamp(cameraRig.position.y,  -7,   8);
-    cameraRig.position.z = THREE.MathUtils.clamp(cameraRig.position.z, -60,  10);
+    cameraRig.position.x = THREE.MathUtils.clamp(cameraRig.position.x, -85,   85);
+    cameraRig.position.y = THREE.MathUtils.clamp(cameraRig.position.y,  -7.5, 16.0);
+    cameraRig.position.z = THREE.MathUtils.clamp(cameraRig.position.z, -95,   35);
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
      handleOrientation(e)
-     Canonical W3C → Three.js landscape pipeline using ZXY Euler order.
-
-     WHY ZXY (not YXZ):
-       The W3C DeviceOrientationEvent defines alpha/beta/gamma as intrinsic ZXY
-       rotations in the device frame. Using ZXY preserves that convention and
-       eliminates the cross-axis swap (tilt↔pan confusion) that occurs when YXZ
-       is applied in landscape orientation.
-
-     Pipeline:
-       1. ZXY Euler from raw sensor radians → setFromEuler → quaternion.
-       2. Right-multiply _q1 (-90° X): rotates portrait-Y-up sensor frame to
-          landscape Three.js world Y-up frame.
-       3. Right-multiply _q0 (screen orient on Z): compensates for landscape
-          rotation angle without corrupting primary axes.
-       4. Write to cameraRig.quaternion; zero pitchObject so it never fights
-          the gyro transform.
+     W3C handleOrientation pipeline with full 360° yaw:
+     - Head rotation (Pitch, Yaw, Roll) EXCLUSIVELY orients the camera.
+     - NO clamps on rotation.y or quaternion.
+     - Canonical transformation from W3C frame to Three.js Y-up world frame.
+     - Applies screen orientation correction angle.
      ═══════════════════════════════════════════════════════════════════════════ */
   function handleOrientation(e) {
     if (e.alpha === null || e.beta === null || e.gamma === null) return;
     if (!gyroActive) gyroActive = true;
 
-    // Step 1: ZXY Euler — canonical W3C device frame (values in radians)
-    _euler.set(
-      THREE.MathUtils.degToRad(e.beta),    // X: device tilt front/back
-      THREE.MathUtils.degToRad(e.alpha),   // Y: compass/azimuth heading
-      THREE.MathUtils.degToRad(-e.gamma),  // Z: device roll (negated for Three.js handedness)
-      'ZXY'
-    );
-    cameraRig.quaternion.setFromEuler(_euler);
+    var alpha = THREE.MathUtils.degToRad(e.alpha); // Z rotation [0, 360]
+    var beta  = THREE.MathUtils.degToRad(e.beta);  // X rotation [-180, 180]
+    var gamma = THREE.MathUtils.degToRad(e.gamma); // Y rotation [-90, 90]
 
-    // Step 2: Right-multiply constant -90° X correction
-    cameraRig.quaternion.multiply(_q1);
+    var screenAngle = (window.screen && window.screen.orientation && window.screen.orientation.angle !== undefined)
+      ? window.screen.orientation.angle
+      : (typeof window.orientation === 'number' ? window.orientation : 0);
+    var orient = THREE.MathUtils.degToRad(screenAngle);
 
-    // Step 3: Right-multiply dynamic screen orientation correction about Z-axis
-    var orient = (window.screen && window.screen.orientation &&
-                  window.screen.orientation.angle !== undefined)
-      ? THREE.MathUtils.degToRad(window.screen.orientation.angle)
-      : (typeof window.orientation === 'number'
-          ? THREE.MathUtils.degToRad(window.orientation)
-          : 0);
+    // Set canonical W3C Euler angles in 'YXZ' order
+    _euler.set(beta, alpha, -gamma, 'YXZ');
 
-    _q0.setFromAxisAngle(_zee, -orient);
-    cameraRig.quaternion.multiply(_q0);
-
-    // Step 4: Zero pitchObject — must never fight or double-apply gyro transforms
-    if (pitchObject) {
-      pitchObject.rotation.set(0, 0, 0);
+    if (cameraRig) {
+      // Unrestricted 360° orientation: head rotation exclusively orients the camera
+      cameraRig.quaternion.setFromEuler(_euler);
+      cameraRig.quaternion.multiply(_q1);      // Convert from device frame to world frame
+      _q0.setFromAxisAngle(_zee, -orient);     // Compensate for screen orientation
+      cameraRig.quaternion.multiply(_q0);
     }
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
      requestGyro()
-     Async iOS 13+ permission flow. MUST be called from inside a user gesture.
+     Async permission request flow for iOS 13+ and Android.
+     MUST be triggered from a user gesture handler.
      ═══════════════════════════════════════════════════════════════════════════ */
   async function requestGyro() {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
@@ -148,80 +125,85 @@ window.ABYSS = window.ABYSS || {};
         return false;
       }
     }
+
+    window.removeEventListener('deviceorientation', handleOrientation);
     window.addEventListener('deviceorientation', handleOrientation, { passive: false });
     return true;
   }
 
+  function stopGyro() {
+    gyroActive = false;
+    window.removeEventListener('deviceorientation', handleOrientation);
+  }
+
   /* ═══════════════════════════════════════════════════════════════════════════
      getCameraPitchY() & getPitchDeg()
-     Sample cameraL world-space direction for HUD readout only.
+     Used exclusively for visual orientation feedback, HUD pitch readouts,
+     and In-VR exit dwell detection (looking up towards surface).
+     NEVER triggers movement.
      ═══════════════════════════════════════════════════════════════════════════ */
   function getCameraPitchY() {
-    if (cameraL) {
-      cameraL.getWorldDirection(_lookDir);
-      _lookDir.normalize();
-      return _lookDir.y;
+    if (activeCamera) {
+      activeCamera.getWorldDirection(_lookDir);
+    } else if (cameraRig) {
+      cameraRig.getWorldDirection(_lookDir);
+    } else {
+      _lookDir.set(0, 0, -1);
     }
-    return 0;
+    _lookDir.normalize();
+    return _lookDir.y;
   }
 
   function getPitchDeg() {
-    if (cameraL) {
-      cameraL.getWorldDirection(_lookDir);
-      _lookDir.normalize();
-      var clampedY = Math.max(-1.0, Math.min(1.0, _lookDir.y));
-      return THREE.MathUtils.radToDeg(Math.asin(clampedY));
-    }
-    return 0;
+    var y = getCameraPitchY();
+    var clampedY = THREE.MathUtils.clamp(y, -1.0, 1.0);
+    return THREE.MathUtils.radToDeg(Math.asin(clampedY));
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     init(inCameraRig, inPitchObject, inCameraL)
-     Call once from main.js _initRenderer() and again on _reset().
-     inCameraL = left-eye PerspectiveCamera; used only for getWorldDirection().
+     init(inCameraRig, inPitchObject, inActiveCamera)
      ═══════════════════════════════════════════════════════════════════════════ */
-  function init(inCameraRig, inPitchObject, inCameraL) {
-    cameraRig   = inCameraRig;
-    pitchObject = inPitchObject;
-    cameraL     = inCameraL || null;
+  function init(inCameraRig, inPitchObject, inActiveCamera) {
+    cameraRig    = inCameraRig;
+    pitchObject  = inPitchObject;
+    activeCamera = inActiveCamera || null;
 
-    // Reset locomotion state in-place (zero allocations)
-    _keys             = {};
-    isPointerDown     = false;
-    _yaw              = 0;
-    _pitchAngle       = 0;
-    _currentFwdSpeed  = 0;
-    _currentVertSpeed = 0;
-    swimState         = 'HOVERING';
+    // Reset locomotion state
+    _keys            = {};
+    isPointerDown    = false;
+    _rotY            = (cameraRig ? cameraRig.rotation.y : 0);
+    _rotX            = 0;
+    _currentFwdSpeed = 0;
+    swimState        = 'HOVERING';
     velocity.set(0, 0, 0);
 
-    /* ── Keyboard fallback (WASD / arrow keys) — desktop debug ── */
-    window.addEventListener('keydown', function (e) { _keys[e.key.toLowerCase()] = true;  });
+    /* ── Keyboard fallback (WASD desktop debug) ── */
+    window.addEventListener('keydown', function (e) { _keys[e.key.toLowerCase()] = true; });
     window.addEventListener('keyup',   function (e) { _keys[e.key.toLowerCase()] = false; });
 
-    /* ── Pointer/Touch — hard lockout when gyroActive ── */
+    /* ── Desktop pointer drag-look fallback (active only when gyro is off) ── */
     window.addEventListener('pointerdown', function (e) {
-      if (gyroActive) return;   // physical sensors take priority
+      if (gyroActive) return;
       isPointerDown = true;
       _lastX = e.clientX;
       _lastY = e.clientY;
     });
 
     window.addEventListener('pointermove', function (e) {
-      if (gyroActive) return;   // hard lockout — immediately exit, no processing at all
-      if (!isPointerDown) return;
+      if (gyroActive || !isPointerDown) return;
 
       var dx = e.clientX - _lastX;
       var dy = e.clientY - _lastY;
       _lastX = e.clientX;
       _lastY = e.clientY;
 
-      _yaw        -= dx * 0.003;
-      _pitchAngle -= dy * 0.003;
-      _pitchAngle  = THREE.MathUtils.clamp(_pitchAngle, -Math.PI / 2, Math.PI / 2);
+      _rotY -= dx * 0.003;
+      _rotX -= dy * 0.003;
+      _rotX  = THREE.MathUtils.clamp(_rotX, -Math.PI / 2.1, Math.PI / 2.1);
 
-      if (cameraRig)   cameraRig.rotation.y   = _yaw;
-      if (pitchObject) pitchObject.rotation.x = _pitchAngle;
+      if (cameraRig) {
+        cameraRig.quaternion.setFromEuler(_euler.set(_rotX, _rotY, 0, 'YXZ'));
+      }
     });
 
     window.addEventListener('pointerup',     function () { isPointerDown = false; });
@@ -230,21 +212,22 @@ window.ABYSS = window.ABYSS || {};
 
   /* ═══════════════════════════════════════════════════════════════════════════
      update(delta)
-     Called every frame by main.js AFTER _rig and _camL updateMatrixWorld().
-
-     Locomotion model:
-       - _lookDir sampled fresh from cameraL.getWorldDirection() each frame.
-       - _currentFwdSpeed  lerps toward targetFwdSpeed  at (delta * 4.0).
-       - _currentVertSpeed lerps toward targetVertSpeed at (delta * 4.0).
-       - Forward: _moveDir = normalize(_lookDir.x, 0, _lookDir.z) * fwdSpeed * delta
-                  → strictly XZ, zero Y-bleed regardless of gaze pitch.
-       - Vertical: cameraRig.position.y += _currentVertSpeed * delta
-                  → independent of forward, no axis coupling.
+     - Delta capped at 0.05s.
+     - Pure Palm-Driven Locomotion:
+         Forward movement triggered ONLY when HandTracker.isPalmActive === true.
+         Target speed = 3.8 u/s (active) or 0.0 u/s (inactive), lerped at delta * 3.5.
+     - Movement projected strictly onto horizontal X-Z plane:
+         _moveDir.set(_lookDir.x, 0, _lookDir.z).normalize()
+         Zero vertical movement from head angle — player never sinks or floats
+         due to looking up or down.
      ═══════════════════════════════════════════════════════════════════════════ */
   function update(delta) {
-    if (!cameraRig || !pitchObject) return;
+    if (!cameraRig) return;
 
-    /* ── 1. WASD keyboard translation — desktop fallback ── */
+    // Delta capped at 0.05s per frame
+    delta = Math.min(delta, 0.05);
+
+    /* ── 1. Desktop Keyboard Translation (WASD Debug) ── */
     var fwd    = (_keys['w'] || _keys['arrowup']    ? -1 : 0)
                + (_keys['s'] || _keys['arrowdown']   ?  1 : 0);
     var strafe = (_keys['a'] || _keys['arrowleft']   ? -1 : 0)
@@ -252,103 +235,68 @@ window.ABYSS = window.ABYSS || {};
 
     if (fwd !== 0 || strafe !== 0) {
       _moveDir.set(strafe, 0, fwd);
-      if (gyroActive) {
-        // On device: orient WASD by full rig quaternion
-        _moveDir.applyQuaternion(cameraRig.quaternion);
-      } else {
-        // Desktop: orient by rig yaw only
-        _moveDir.applyEuler(_euler.set(0, cameraRig.rotation.y, 0, 'YXZ'));
-      }
+      _moveDir.applyEuler(_euler.set(0, cameraRig.rotation.y, 0, 'YXZ'));
       _moveDir.y = 0;
       if (_moveDir.lengthSq() > 0.0001) _moveDir.normalize();
       cameraRig.position.addScaledVector(_moveDir, WASD_SPEED * delta);
       _clampRig();
     }
 
-    /* ── 2. Sample world-space gaze direction from the left-eye camera ── */
-    if (cameraL) {
-      cameraL.getWorldDirection(_lookDir);
+    /* ── 2. Sample World-Space Head Gaze Direction ── */
+    if (activeCamera) {
+      activeCamera.getWorldDirection(_lookDir);
       _lookDir.normalize();
     } else {
-      _lookDir.set(0, 0, -1);   // safe fallback: forward along -Z
+      cameraRig.getWorldDirection(_lookDir);
+      _lookDir.normalize();
     }
 
-    /* ── 3. Classify locomotion zone from _lookDir.y ──────────────────────────
-       Zone boundaries (spec-exact):
-         HOVERING  : -0.20 <= y <= +0.30  → full stop; all speeds lerp to 0
-         SWIMMING  : -0.65 <= y <  -0.20  → fwd ramp 1.5→6.5 u/s, vert neutral
-         Dead-band : -0.70 <= y <  -0.65  → fwd stays at 6.5 u/s, vert neutral
-         DIVING    :          y <  -0.70  → vert -2.5 u/s, fwd 1.8 u/s (reduced)
-         ASCENDING :          y >  +0.30  → vert +2.8 u/s, gentle 2.0 u/s fwd
-    ── */
-    var targetFwdSpeed  = 0;
-    var targetVertSpeed = 0;
+    /* ── 3. Pure Palm-Driven Locomotion ──
+       Forward movement is triggered ONLY when window.ABYSS.HandTracker.isPalmActive === true.
+       Head tilt (pitch/roll) NEVER triggers movement.
+    */
+    var isPalmActive = Boolean(
+      window.ABYSS &&
+      window.ABYSS.HandTracker &&
+      window.ABYSS.HandTracker.isPalmActive === true
+    );
 
-    if (_lookDir.y > 0.30) {
-      // ── ASCENDING: tilted nose-up toward the surface ──
-      swimState       = 'ASCENDING';
-      targetFwdSpeed  = 2.0;    // gentle forward drift during ascent
-      targetVertSpeed = 2.8;    // upward velocity (units/sec)
+    var targetSpeed = isPalmActive ? PALM_SWIM_SPEED : 0.0;
+    _currentFwdSpeed = THREE.MathUtils.lerp(_currentFwdSpeed, targetSpeed, Math.min(delta * 3.5, 1.0));
 
-    } else if (_lookDir.y < -0.70) {
-      // ── DIVING: steep nose-down gaze into the trench ──
-      swimState       = 'DIVING';
-      targetFwdSpeed  = 1.8;    // reduced horizontal while diving
-      targetVertSpeed = -2.5;   // downward velocity (units/sec)
-
-    } else if (_lookDir.y < -0.20) {
-      // ── SWIMMING: gaze angled slightly down toward the reef ──
-      //    t ramps 0→1 from -0.20 to -0.65; dead-band [-0.65, -0.70] clamps at 1.0
-      swimState = 'SWIMMING';
-      var t = Math.min(1.0, (_lookDir.y + 0.20) / -0.45);   // window width = 0.45
-      targetFwdSpeed  = THREE.MathUtils.lerp(1.5, 6.5, t);  // 1.5→6.5 u/s
-      targetVertSpeed = 0;
-
-    } else {
-      // ── HOVERING: gaze near horizon [-0.20, +0.30] ──
-      swimState       = 'HOVERING';
-      targetFwdSpeed  = 0;
-      targetVertSpeed = 0;
+    if (_currentFwdSpeed < 0.005) {
+      _currentFwdSpeed = 0;
     }
 
-    /* ── 4. Lerp all speeds toward targets ── */
-    _currentFwdSpeed  = THREE.MathUtils.lerp(_currentFwdSpeed,  targetFwdSpeed,  delta * 4.0);
-    _currentVertSpeed = THREE.MathUtils.lerp(_currentVertSpeed, targetVertSpeed, delta * 4.0);
+    swimState = (_currentFwdSpeed > 0.05) ? 'SWIMMING' : 'HOVERING';
 
-    // Snap micro-speeds to zero when hovering — prevents endless micro-drift
-    if (swimState === 'HOVERING') {
-      if (Math.abs(_currentFwdSpeed)  < 0.008) _currentFwdSpeed  = 0;
-      if (Math.abs(_currentVertSpeed) < 0.008) _currentVertSpeed = 0;
-    }
-
-    /* ── 5. Translate cameraRig ──────────────────────────────────────────────
-       Forward: XZ projection of _lookDir → normalize → scale → add to position.
-                Strictly horizontal — no Y bleed regardless of gaze pitch.
-       Vertical: applied independently to position.y — no coupling to forward.
-    ── */
-    if (_currentFwdSpeed !== 0) {
+    /* ── 4. Project Movement onto Horizontal X-Z Plane ──
+       The player swims horizontally in whichever direction their head is facing,
+       without sinking or floating due to vertical head angle.
+    */
+    if (_currentFwdSpeed > 0.001) {
       _moveDir.set(_lookDir.x, 0, _lookDir.z);
       if (_moveDir.lengthSq() > 0.0001) {
-        _moveDir.normalize().multiplyScalar(_currentFwdSpeed * delta);
-        cameraRig.position.add(_moveDir);
+        _moveDir.normalize();
+        cameraRig.position.addScaledVector(_moveDir, _currentFwdSpeed * delta);
       }
     }
 
-    if (_currentVertSpeed !== 0) {
-      cameraRig.position.y += _currentVertSpeed * delta;
-    }
-
-    /* ── 6. World boundary clamp ── */
+    /* ── 5. World Boundary Clamp ── */
     _clampRig();
 
-    /* ── 7. Sync public velocity vector for external callers (HUD, audio) ── */
-    velocity.set(
-      _currentFwdSpeed * _lookDir.x,
-      _currentVertSpeed,
-      _currentFwdSpeed * _lookDir.z
-    );
+    /* ── 6. Velocity Vector Sync for HUD / Audio ── */
+    if (_moveDir.lengthSq() > 0.0001) {
+      velocity.set(
+        _currentFwdSpeed * _moveDir.x,
+        0,
+        _currentFwdSpeed * _moveDir.z
+      );
+    } else {
+      velocity.set(0, 0, 0);
+    }
 
-    /* ── 8. Publish rig position for entity proximity checks (shark, etc.) ── */
+    /* ── 7. Rig Position Sync for Entity Proximity (Shark, etc.) ── */
     if (window.ABYSS) {
       if (!window.ABYSS._rigPosition) {
         window.ABYSS._rigPosition = new THREE.Vector3();
@@ -359,7 +307,6 @@ window.ABYSS = window.ABYSS || {};
 
   /* ═══════════════════════════════════════════════════════════════════════════
      PUBLIC API — window.ABYSS.Controls
-     All existing call sites in main.js, entities.js, audio.js preserved.
      ═══════════════════════════════════════════════════════════════════════════ */
   window.ABYSS.Controls = {
     init:              init,
@@ -367,16 +314,18 @@ window.ABYSS = window.ABYSS || {};
     getSwimState:      function () { return swimState; },
     getVelocity:       function () { return velocity; },
     requestGyro:       requestGyro,
+    stopGyro:          stopGyro,
     getCameraPitchY:   getCameraPitchY,
     getPitchDeg:       getPitchDeg,
+    getLookDirection:  function () { return _lookDir.clone(); },
     get gyroActive()   { return gyroActive; },
-    get isGyroActive() { return gyroActive; },   // legacy alias
+    get isGyroActive() { return gyroActive; },
     get swimStatus()   {
       return (_currentFwdSpeed > 0.05) ? 'ON' : 'OFF';
     }
   };
 
-  // Legacy alias — backward compatible with window.Controls references
+  // Legacy alias for backward compatibility
   window.Controls = window.ABYSS.Controls;
 
 }());

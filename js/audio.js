@@ -419,6 +419,11 @@ window.ABYSS = window.ABYSS || {};
     startBubbleLoop();
   }
 
+  function stopAmbient() {
+    stopOceanHum();
+    stopBubbleLoop();
+  }
+
   /* ─────────────────────────────────────────────────────────────────────────
      VICTORY CHORD — ascending arpeggio (C5 → C6)
   ───────────────────────────────────────────────────────────────────────── */
@@ -460,6 +465,7 @@ window.ABYSS = window.ABYSS || {};
     startBubbleLoop:      startBubbleLoop,
     stopBubbleLoop:       stopBubbleLoop,
     playAmbient:          playAmbient,
+    stopAmbient:          stopAmbient,
     playSonarPing:        playSonarPing,
     playScanChime:        playScanChime,
     playVictory:          playVictory,

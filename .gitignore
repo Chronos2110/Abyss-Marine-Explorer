@@ -1,4 +1,35 @@
+# Node dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build artifacts
+dist/
+
+# Android Studio & Gradle
+.gradle/
+build/
+android/.gradle/
+android/build/
+android/app/build/
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+
+# Android Studio / IntelliJ local settings
+*.iml
+.idea/
+local.properties
+android/local.properties
+android/.idea/
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+
+# Compiled APKs (host APKs in GitHub Releases, not git history)
+*.apk
+*.aab
 .agent/
 .vscode/
-*.log
-.DS_store
