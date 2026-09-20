@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com;">
+    content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com https://cdn.jsdelivr.net https://storage.googleapis.com;">
   <meta name="description"
     content="ABYSS: Marine Explorer — Immersive side-by-side VR underwater exploration. Scan marine life, collect pollution, unlock the research station.">
   <title>ABYSS: Marine Explorer</title>
@@ -15,6 +15,14 @@
 </head>
 
 <body>
+
+  <!-- Diagnostic Vision HUD Banner -->
+  <div id="vision-hud" style="position:fixed; top:12px; left:50%; transform:translateX(-50%); color:#00ff88; font-family:monospace; font-size:12px; z-index:9999; pointer-events:none; background:rgba(0,0,0,0.65); padding:4px 10px; border-radius:4px;">
+    Vision: Idle
+  </div>
+
+  <!-- Offscreen Rear Camera Feed -->
+  <video id="rear-camera-feed" playsinline webkit-playsinline muted autoplay style="display:none; position:fixed; top:-9999px; left:-9999px; width:1px; height:1px; opacity:0; pointer-events:none;"></video>
 
   <!-- ══════════════════════════════════════════
        LOADING SCREEN
@@ -97,8 +105,8 @@
       </p>
 
       <div class="inst-grid">
-        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag, tilt, or palm gesture</div>
-        <div class="inst-cell"><span class="inst-key">SWIM</span>Open palm or nose-down gaze</div>
+        <div class="inst-cell"><span class="inst-key">LOOK</span>Gyroscopic 360° head orientation</div>
+        <div class="inst-cell"><span class="inst-key">SWIM</span>Open palm gesture (rear camera)</div>
         <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 1.2 s</div>
         <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>6 species · 6 pollution · 2 conduits · station</div>
       </div>
@@ -121,15 +129,15 @@
 
   <!-- ══════════════════════════════════════════
        SCRIPTS — dependency order
-       Three.js r128 via CDN (relative-path compatible)
+       Three.js r128 via CDN
        ══════════════════════════════════════════ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/environment.js"></script>
-  <script src="js/entities.js"></script>
-  <script src="js/hand_tracking.js"></script>
+  <script type="module" src="js/hand_tracking.js"></script>
   <script src="js/controls.js"></script>
-  <script src="js/main.js"></script>
+  <script src="js/entities.js"></script>
+  <script type="module" src="js/main.js"></script>
 
 </body>
 

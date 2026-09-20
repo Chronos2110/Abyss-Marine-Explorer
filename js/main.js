@@ -1464,10 +1464,56 @@ window.ABYSS = window.ABYSS || {};
     _launched = false;
   }
 
-  // Register public exit API
+  // Register public exit & start API
+  window.ABYSS.startDive       = startDive;
   window.ABYSS.exitDiveSession = exitDiveSession;
   window.ABYSS.quitGame        = exitDiveSession;
   window.ABYSS.startGame       = _startGame;
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     startDive() — Sensor & Vision Pipeline Initialization
+     - Await window.ABYSS.HandTracker.startRearCamera().
+     - Await window.ABYSS.HandTracker.setupHandTracker().
+     - Await window.ABYSS.Controls.requestGyro().
+  ───────────────────────────────────────────────────────────────────────── */
+  async function startDive() {
+    console.log('[ABYSS] Initializing dive sensors and camera...');
+    var hud = document.getElementById('vision-hud');
+    if (hud) hud.textContent = 'Vision: Starting Camera...';
+
+    // 1. Await start rear camera
+    if (window.ABYSS && window.ABYSS.HandTracker && typeof window.ABYSS.HandTracker.startRearCamera === 'function') {
+      try {
+        await window.ABYSS.HandTracker.startRearCamera();
+      } catch (err) {
+        console.warn('[ABYSS] startRearCamera error:', err);
+      }
+    }
+
+    // 2. Await setup hand tracker
+    if (window.ABYSS && window.ABYSS.HandTracker && typeof window.ABYSS.HandTracker.setupHandTracker === 'function') {
+      try {
+        await window.ABYSS.HandTracker.setupHandTracker();
+      } catch (err) {
+        console.warn('[ABYSS] setupHandTracker error:', err);
+      }
+    } else if (window.ABYSS && window.ABYSS.HandTracker && typeof window.ABYSS.HandTracker.init === 'function') {
+      try {
+        await window.ABYSS.HandTracker.init();
+      } catch (err) {
+        console.warn('[ABYSS] HandTracker.init error:', err);
+      }
+    }
+
+    // 3. Await request gyroscope orientation
+    if (window.ABYSS && window.ABYSS.Controls && typeof window.ABYSS.Controls.requestGyro === 'function') {
+      try {
+        await window.ABYSS.Controls.requestGyro();
+      } catch (err) {
+        console.warn('[ABYSS] requestGyro error:', err);
+      }
+    }
+  }
 
   /* ─────────────────────────────────────────────────────────────────────────
      RESIZE & ORIENTATION HANDLER
@@ -1477,9 +1523,9 @@ window.ABYSS = window.ABYSS || {};
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
-     BOOTSTRAP — DOMContentLoaded
+     BOOTSTRAP & LIFECYCLE WIRING
   ───────────────────────────────────────────────────────────────────────── */
-  document.addEventListener('DOMContentLoaded', function () {
+  function _bootstrap() {
     // 1. Enforce portrait mode on startup
     _setOrientation('portrait');
 
@@ -1500,9 +1546,8 @@ window.ABYSS = window.ABYSS || {};
        1. Lock landscape orientation.
        2. 150ms timeout for viewport dimensions to settle.
        3. Update renderer viewport and camera aspect.
-       4. Request gyro permissions.
-       5. Initialize HandTracker sensor.
-       6. Show #vrCanvas and sonar canvases, start VR game loop.
+       4. startDive(): rear camera, MediaPipe hand tracker, and gyroscope.
+       5. Show #vrCanvas and sonar canvases, start VR game loop.
     ─────────────────────────────────────────────────────────────────────────── */
     async function _onTapToDive(e) {
       if (_launched) return;
@@ -1541,21 +1586,10 @@ window.ABYSS = window.ABYSS || {};
       _initRenderer();
       _updateCameraAspect();
 
-      // Step 4: Request gyroscope permission
-      try {
-        if (window.ABYSS && window.ABYSS.Controls && window.ABYSS.Controls.requestGyro) {
-          await window.ABYSS.Controls.requestGyro();
-        }
-      } catch (err) {
-        console.warn('[ABYSS] Gyro request exception:', err);
-      }
+      // Step 4: Lifecycle startDive() -> rear camera, hand tracker & gyroscope
+      await startDive();
 
-      // Step 5: Initialize HandTracker sensor pipeline
-      if (window.ABYSS && window.ABYSS.HandTracker && window.ABYSS.HandTracker.init) {
-        window.ABYSS.HandTracker.init().catch(function () {});
-      }
-
-      // Step 6: Show Quit HUD button & hide start overlay
+      // Step 5: Show Quit HUD button & hide start overlay
       var quitBtn = document.getElementById('quitBtn');
       if (quitBtn) quitBtn.classList.remove('hidden');
 
@@ -1642,8 +1676,8 @@ window.ABYSS = window.ABYSS || {};
           if (window.ABYSS && window.ABYSS.Audio && window.ABYSS.Audio.playAmbient) {
             window.ABYSS.Audio.playAmbient();
           }
-          if (window.ABYSS && window.ABYSS.HandTracker && window.ABYSS.HandTracker.init) {
-            window.ABYSS.HandTracker.init().catch(function () {});
+          if (window.ABYSS && window.ABYSS.HandTracker && window.ABYSS.HandTracker.startRearCamera) {
+            window.ABYSS.HandTracker.startRearCamera().catch(function () {});
           }
         }
       }
@@ -1659,6 +1693,13 @@ window.ABYSS = window.ABYSS || {};
         setTimeout(_onResize, 150);
       });
     }
-  });
+  }
+
+  // Safe bootstrap execution across direct script or module loader
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _bootstrap);
+  } else {
+    _bootstrap();
+  }
 
 }());

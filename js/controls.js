@@ -1,24 +1,20 @@
 /* =============================================================================
    ABYSS: Marine Explorer — js/controls.js
-   MODULE 1: Vision-Only Gyroscope & Pure Palm-Driven Locomotion Engine
+   MODULE 1: Vision-Only Gyroscope & Thrust-Driven Hand Tracking Locomotion
 
    CRITICAL RUNTIME ARCHITECTURE:
    1. Vision Only for Gyroscope:
       - Head rotation (Pitch, Yaw, Roll) exclusively orients the camera.
       - Full 360° unrestricted yaw via canonical W3C Euler 'YXZ' multiplied
         by _q1 (-90° X device frame to Three.js world frame) and _q0 (screen orientation).
-      - Zero gyro-pitch locomotion: all code checking nose-down pitch for swimming/diving
-        or nose-up pitch for ascending is completely eliminated. Head tilt NEVER triggers movement.
-   2. Pure Palm-Driven Locomotion:
-      - Forward locomotion is triggered ONLY when:
-          window.ABYSS.HandTracker.isPalmActive === true
-      - Target horizontal forward speed:
-          Active   : 3.8 units/second (lerped smoothly via delta * 3.5)
-          Inactive : 0.0 units/second
+      - Zero gyro-pitch locomotion: all nose-down / nose-up locomotion triggers removed.
+   2. Pure Hand-Tracking Thrust Locomotion:
+      - Forward speed depends strictly on window.ABYSS.HandTracker.getThrust().
+      - When handThrust > 0: targetSpeed = handThrust * CRUISE_SPEED (3.8 u/s).
+      - When handThrust === 0: targetSpeed = 0.0 u/s.
+      - Screen touch, pointer down, and drift fallbacks are completely excluded.
       - Movement is strictly projected onto the horizontal X-Z plane:
           _moveDir.set(_lookDir.x, 0, _lookDir.z).normalize()
-        The player swims horizontally in whichever direction their head is facing,
-        without sinking or floating due to vertical head angle.
    3. Zero Garbage Collection:
       - Pre-allocated module-level math objects (_euler, _q0, _q1, _zee, _lookDir, _moveDir).
       - Delta time clamped to 0.05s per frame (prevents simulation tunneling).
@@ -30,7 +26,7 @@ window.ABYSS = window.ABYSS || {};
   'use strict';
 
   /* ─── Locomotion Constants ───────────────────────────────────────────────── */
-  var PALM_SWIM_SPEED = 3.8;                          // Target speed when palm is active (units/sec)
+  var CRUISE_SPEED    = 3.8;                          // Target speed multiplier when hand thrust is applied
   var WASD_SPEED      = 8.5;                          // Desktop keyboard debug speed (units/sec)
 
   /* ─── Module-Scope Scene References ─────────────────────────────────────── */
@@ -54,7 +50,7 @@ window.ABYSS = window.ABYSS || {};
   var swimState        = 'HOVERING';
   var velocity         = new THREE.Vector3();
 
-  /* ─── Desktop Pointer Fallback State ─────────────────────────────────────── */
+  /* ─── Desktop Pointer Look State (Camera rotation only, never locomotion) ─── */
   var _keys         = {};
   var isPointerDown = false;
   var _lastX        = 0;
@@ -64,7 +60,7 @@ window.ABYSS = window.ABYSS || {};
 
   /* ═══════════════════════════════════════════════════════════════════════════
      _clampRig()
-     Enforces world boundaries on cameraRig within the 200x200 seabed terrain.
+     Enforces world boundaries on cameraRig within the seabed terrain.
      ═══════════════════════════════════════════════════════════════════════════ */
   function _clampRig() {
     if (!cameraRig) return;
@@ -213,13 +209,13 @@ window.ABYSS = window.ABYSS || {};
   /* ═══════════════════════════════════════════════════════════════════════════
      update(delta)
      - Delta capped at 0.05s.
-     - Pure Palm-Driven Locomotion:
-         Forward movement triggered ONLY when HandTracker.isPalmActive === true.
-         Target speed = 3.8 u/s (active) or 0.0 u/s (inactive), lerped at delta * 3.5.
+     - Pure Hand-Tracking Thrust Locomotion:
+         Forward speed depends strictly on window.ABYSS.HandTracker.getThrust().
+         Screen touches, nose-down pitch, and arbitrary drifts are strictly excluded.
+         targetSpeed = handThrust * CRUISE_SPEED;
      - Movement projected strictly onto horizontal X-Z plane:
          _moveDir.set(_lookDir.x, 0, _lookDir.z).normalize()
-         Zero vertical movement from head angle — player never sinks or floats
-         due to looking up or down.
+     - Head gyroscope orientation remains 100% independent and drives camera only.
      ═══════════════════════════════════════════════════════════════════════════ */
   function update(delta) {
     if (!cameraRig) return;
@@ -251,17 +247,18 @@ window.ABYSS = window.ABYSS || {};
       _lookDir.normalize();
     }
 
-    /* ── 3. Pure Palm-Driven Locomotion ──
-       Forward movement is triggered ONLY when window.ABYSS.HandTracker.isPalmActive === true.
-       Head tilt (pitch/roll) NEVER triggers movement.
+    /* ── 3. Clean Hand-Tracking Thrust Locomotion ──
+       Forward movement depends strictly on window.ABYSS.HandTracker.getThrust().
+       Touch, screen taps, nose-down pitch, and arbitrary drifts are strictly excluded.
     */
-    var isPalmActive = Boolean(
-      window.ABYSS &&
-      window.ABYSS.HandTracker &&
-      window.ABYSS.HandTracker.isPalmActive === true
-    );
+    var handThrust = 0.0;
+    if (window.ABYSS && window.ABYSS.HandTracker && typeof window.ABYSS.HandTracker.getThrust === 'function') {
+      handThrust = window.ABYSS.HandTracker.getThrust();
+    } else if (window.ABYSS && window.ABYSS.HandTracker && window.ABYSS.HandTracker.HandMotion) {
+      handThrust = window.ABYSS.HandTracker.HandMotion.thrust || 0.0;
+    }
 
-    var targetSpeed = isPalmActive ? PALM_SWIM_SPEED : 0.0;
+    var targetSpeed = (handThrust > 0.0) ? (handThrust * CRUISE_SPEED) : 0.0;
     _currentFwdSpeed = THREE.MathUtils.lerp(_currentFwdSpeed, targetSpeed, Math.min(delta * 3.5, 1.0));
 
     if (_currentFwdSpeed < 0.005) {
