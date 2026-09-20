@@ -1,13 +1,8 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — css/style.css  v3
-   Cyber-nautical full-bleed design system.
-   Static layer: helmet vignette, condensation overlays.
-   Dynamic layer: hudCanvas (canvas 2D — zero DOM reflow).
+   ABYSS: Marine Explorer — v2 Stylesheet
    ============================================================================= */
 
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap');
-
-/* ─── Reset & Root ─────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
 
 *, *::before, *::after {
   margin: 0;
@@ -15,350 +10,284 @@
   box-sizing: border-box;
 }
 
-:root {
-  --cyan:    #00ffcc;
-  --blue:    #00aaff;
-  --navy:    #041b33;
-  --dark:    #020a18;
-  --abyss:   #041a2e;
-  --warn:    #ff4444;
-  --amber:   #ffaa00;
-  --glass:   rgba(4, 27, 51, 0.82);
-  --border:  rgba(0, 255, 204, 0.22);
-  --font-hud: 'Share Tech Mono', 'Courier New', monospace;
-  --font-ui:  'Orbitron', 'Courier New', monospace;
-}
-
 html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: var(--abyss);
-  font-family: var(--font-hud);
+  background: #000;
+  font-family: 'Courier New', Courier, monospace;
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
-  user-select: none;
 }
 
-/* ─── Canvas Stack ──────────────────────────────────────────────────────────── */
+/* =============================================================================
+   CANVAS STACK
+   ============================================================================= */
 
-/* #vrCanvas: position:fixed fills Capacitor WebView exactly */
 #vrCanvas {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  display: block;
-  z-index: 1;
-}
-
-/* #hudCanvas: dynamic reticle arc + numeric HUD — no pointer events */
-#hudCanvas {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  display: block;
-  pointer-events: none;
-  z-index: 20;
-}
-
-/* ─── Helmet Vignette Overlay ───────────────────────────────────────────────
-   Static layer above vrCanvas (z:1), below hudCanvas (z:20).
-   Radial vignette via ::before; SVG frame/streaks in child SVG element.
-   pointer-events:none prevents any interaction capture.
-   ─────────────────────────────────────────────────────────────────────────── */
-
-#helmetOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  pointer-events: none;
-  /* Dark oval vignette — feathers inward ~18% from all edges, 80% opacity */
-  background:
-    radial-gradient(
-      ellipse 70% 65% at 50% 50%,
-      transparent 54%,
-      rgba(2, 6, 18, 0.48) 68%,
-      rgba(1, 4, 14, 0.80) 100%
-    );
-}
-
-/* SVG fills the full overlay; viewBox allows proportional scaling */
-#helmetSVG {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
+  display: block;
+}
+
+#hudCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   pointer-events: none;
 }
 
-/* ─── Loading Overlay ───────────────────────────────────────────────────────── */
+/* =============================================================================
+   OVERLAY BASE
+   ============================================================================= */
 
-#loadingOverlay {
+.overlay {
   position: fixed;
   inset: 0;
-  z-index: 300;
-  background: #000;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-}
-
-.ld-ring {
-  width: 52px;
-  height: 52px;
-  border: 2px solid rgba(0, 255, 204, 0.15);
-  border-top-color: var(--cyan);
-  border-radius: 50%;
-  animation: spin 0.75s linear infinite;
-}
-
-.ld-label {
-  font-family: var(--font-ui);
-  font-size: 0.75rem;
-  letter-spacing: 0.3em;
-  color: var(--cyan);
-  text-transform: uppercase;
-}
-
-.ld-sub {
-  font-size: 0.6rem;
-  letter-spacing: 0.2em;
-  color: rgba(0, 170, 255, 0.55);
-  text-transform: uppercase;
-}
-
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ─── Overlay Shell ─────────────────────────────────────────────────────────── */
-
-#overlay,
-#endOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: rgba(2, 10, 24, 0.92);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 10;
+  color: #fff;
   text-align: center;
-  padding: 16px;
+  padding: 20px;
 }
 
-#overlay {
-  background: radial-gradient(ellipse at 50% 40%, #020e1f 0%, #000508 75%);
-}
-
-#endOverlay {
-  background: rgba(2, 10, 24, 0.88);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-}
-
-#overlay.hidden,
-#endOverlay.hidden {
+.overlay.hidden {
   display: none;
 }
 
-/* Animated bg particles canvas sits inside #overlay */
-#bgParticles {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  opacity: 0.35;
-}
-
-/* ─── Menu Card ─────────────────────────────────────────────────────────────── */
-
-.menu-card {
-  position: relative;
-  z-index: 1;
+.overlay-content {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0;
   max-width: 540px;
   width: 100%;
-  padding: 40px 32px;
-  background: var(--glass);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  box-shadow:
-    0 0 40px rgba(0, 255, 204, 0.06),
-    inset 0 0 60px rgba(0, 255, 204, 0.03);
 }
 
-.end-card {
-  gap: 12px;
+/* =============================================================================
+   START SCREEN
+   ============================================================================= */
+
+#overlay {
+  background: radial-gradient(ellipse at center, #020e1f 0%, #000508 70%);
 }
 
-/* ─── Menu Typography ───────────────────────────────────────────────────────── */
-
-.menu-eyebrow {
-  font-family: var(--font-ui);
-  font-size: 0.6rem;
-  letter-spacing: 0.35em;
-  color: rgba(0, 170, 255, 0.7);
-  text-transform: uppercase;
-  margin-bottom: 8px;
+#bgParticles {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.3;
+  pointer-events: none;
 }
 
-.menu-title {
-  font-family: var(--font-ui);
-  font-size: clamp(2.8rem, 9vw, 5.5rem);
+.title {
+  font-family: 'Orbitron', 'Courier New', monospace;
+  font-size: clamp(3rem, 8vw, 6rem);
   font-weight: 900;
   letter-spacing: 0.3em;
-  color: var(--cyan);
-  line-height: 1;
-  text-shadow:
-    0 0 28px rgba(0, 255, 204, 0.8),
-    0 0 60px rgba(0, 170, 255, 0.4);
-  margin-bottom: 4px;
-  animation: titlePulse 4s ease-in-out infinite;
+  color: #00ffcc;
+  text-shadow: 0 0 30px #00ffcc, 0 0 60px #00aaff, 0 0 100px #0077ff;
+  margin-bottom: 8px;
+  animation: titlePulse 3s ease-in-out infinite;
 }
 
 @keyframes titlePulse {
-  0%, 100% { text-shadow: 0 0 28px rgba(0,255,204,0.7), 0 0 55px rgba(0,170,255,0.35); }
-  50%       { text-shadow: 0 0 50px rgba(0,255,204,1.0), 0 0 90px rgba(0,170,255,0.6), 0 0 130px rgba(0,80,255,0.3); }
+  0%, 100% { text-shadow: 0 0 30px #00ffcc, 0 0 60px #00aaff; }
+  50%       { text-shadow: 0 0 50px #00ffcc, 0 0 90px #00aaff, 0 0 130px #0077ff; }
 }
 
-.menu-sub {
-  font-family: var(--font-ui);
-  font-size: clamp(0.55rem, 2vw, 0.78rem);
-  letter-spacing: 0.45em;
-  color: rgba(79, 195, 247, 0.8);
+.subtitle {
+  font-size: clamp(0.7rem, 2.5vw, 1rem);
+  letter-spacing: 0.35em;
+  color: #4fc3f7;
+  margin-bottom: 32px;
+  opacity: 0.85;
   text-transform: uppercase;
-  margin-bottom: 20px;
 }
 
-.menu-divider {
-  width: 100%;
+.divider {
+  width: 120px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--border), var(--border), transparent);
-  margin-bottom: 20px;
+  background: linear-gradient(90deg, transparent, #00ffcc, transparent);
+  margin-bottom: 28px;
 }
 
-.menu-brief {
-  font-size: clamp(0.62rem, 1.8vw, 0.78rem);
-  color: rgba(178, 235, 242, 0.85);
-  line-height: 1.9;
-  margin-bottom: 20px;
+.instructions {
+  font-size: clamp(0.65rem, 2vw, 0.82rem);
+  color: #80cbc4;
+  line-height: 1.8;
+  margin-bottom: 40px;
   letter-spacing: 0.04em;
+  opacity: 0.9;
 }
 
-/* ─── Instruction Grid ──────────────────────────────────────────────────────── */
+/* =============================================================================
+   INSTRUCTION GRID
+   ============================================================================= */
 
 .inst-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
+  max-width: 420px;
   width: 100%;
-  margin-bottom: 28px;
+  margin-bottom: 44px;
 }
 
-.inst-cell {
-  background: rgba(0, 255, 204, 0.04);
-  border: 1px solid rgba(0, 255, 204, 0.12);
-  border-radius: 3px;
-  padding: 10px 12px;
-  font-size: 0.62rem;
-  color: rgba(178, 235, 242, 0.8);
-  line-height: 1.6;
-  text-align: left;
+.inst-item {
+  background: rgba(0, 255, 204, 0.05);
+  border: 1px solid rgba(0, 255, 204, 0.18);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 0.68rem;
+  color: #b2ebf2;
+  line-height: 1.5;
   transition: border-color 0.2s, background 0.2s;
 }
 
-.inst-cell:hover {
-  border-color: rgba(0, 255, 204, 0.3);
-  background: rgba(0, 255, 204, 0.07);
+.inst-item:hover {
+  border-color: rgba(0, 255, 204, 0.4);
+  background: rgba(0, 255, 204, 0.09);
 }
 
-.inst-key {
+.inst-item span {
   display: block;
-  font-family: var(--font-ui);
-  font-size: 0.58rem;
+  font-size: 0.78rem;
+  color: #00ffcc;
+  margin-bottom: 4px;
   font-weight: 700;
-  letter-spacing: 0.15em;
-  color: var(--cyan);
-  margin-bottom: 3px;
+  letter-spacing: 0.1em;
 }
 
-/* ─── CTA Button ────────────────────────────────────────────────────────────── */
+/* =============================================================================
+   DIVE BUTTON
+   ============================================================================= */
 
-.cta-btn {
-  font-family: var(--font-ui);
-  font-size: clamp(0.75rem, 2.5vw, 0.95rem);
-  font-weight: 700;
-  letter-spacing: 0.25em;
-  color: var(--cyan);
+.dive-btn {
+  border: 2px solid #00ffcc;
+  color: #00ffcc;
   background: transparent;
-  border: 1px solid var(--cyan);
-  padding: 14px 40px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: clamp(0.9rem, 3vw, 1.2rem);
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  padding: 1rem 3rem;
   cursor: pointer;
+  border-radius: 4px;
+  text-transform: uppercase;
   position: relative;
   overflow: hidden;
-  isolation: isolate;
-  transition: color 0.22s, background 0.22s, box-shadow 0.22s;
-  animation: btnPulse 3s ease-in-out infinite;
+  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
+  animation: btnGlow 2.5s ease-in-out infinite;
 }
 
-.cta-btn::before {
+.dive-btn::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: var(--cyan);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.22s;
-  z-index: -1;
+  background: linear-gradient(135deg, rgba(0,255,204,0.08), transparent);
+  opacity: 0;
+  transition: opacity 0.25s;
 }
 
-.cta-btn:hover {
-  color: var(--dark);
-  box-shadow: 0 0 30px rgba(0, 255, 204, 0.5), 0 0 60px rgba(0, 255, 204, 0.2);
+.dive-btn:hover {
+  background: #00ffcc;
+  color: #020a18;
+  box-shadow: 0 0 40px rgba(0,255,204,0.6), 0 0 80px rgba(0,119,255,0.3);
 }
 
-.cta-btn:hover::before { transform: scaleX(1); }
-.cta-btn:active { transform: scale(0.97); }
-
-@keyframes btnPulse {
-  0%, 100% { box-shadow: 0 0 12px rgba(0,255,204,0.25); }
-  50%       { box-shadow: 0 0 28px rgba(0,255,204,0.55), 0 0 50px rgba(0,255,204,0.2); }
+.dive-btn:hover::before {
+  opacity: 1;
 }
 
-/* ─── End Overlay Typography ────────────────────────────────────────────────── */
+.dive-btn:active {
+  transform: scale(0.97);
+}
 
-.end-title {
-  font-family: var(--font-ui);
-  font-size: clamp(1.4rem, 5vw, 2.6rem);
+@keyframes btnGlow {
+  0%, 100% { box-shadow: 0 0 20px rgba(0,255,204,0.3); }
+  50%       { box-shadow: 0 0 40px rgba(0,255,204,0.7), 0 0 70px rgba(0,119,255,0.4); }
+}
+
+/* =============================================================================
+   GAME OVER / MISSION COMPLETE OVERLAY
+   ============================================================================= */
+
+#gameOverlay {
+  z-index: 20;
+}
+
+#gameOverlay .overlay-content {
+  gap: 16px;
+}
+
+#overlayTitle {
+  font-family: 'Orbitron', 'Courier New', monospace;
+  font-size: clamp(1.6rem, 6vw, 3rem);
   font-weight: 900;
-  letter-spacing: 0.18em;
-  line-height: 1.1;
+  letter-spacing: 0.2em;
+  margin-bottom: 4px;
 }
 
-.end-msg {
-  font-size: clamp(0.65rem, 1.8vw, 0.82rem);
-  color: rgba(178, 235, 242, 0.85);
-  line-height: 1.9;
+#overlayMsg {
+  font-size: clamp(0.7rem, 2vw, 0.9rem);
+  color: #b2ebf2;
+  letter-spacing: 0.08em;
   max-width: 400px;
-  letter-spacing: 0.04em;
+  line-height: 1.8;
+  margin-bottom: 16px;
 }
 
-/* ─── O₂ Bar Red-Pulse Keyframe (consumed by hudCanvas JS timing) ────────────
-   NOTE: actual O₂ bar is drawn on hudCanvas (canvas 2D, zero DOM reflow).
-   This keyframe is kept here for reference / future CSS-driven fallback.
-   ─────────────────────────────────────────────────────────────────────────── */
-@keyframes o2Pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.35; }
+/* =============================================================================
+   LOADING OVERLAY
+   ============================================================================= */
+
+#loadingOverlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  color: #00ffcc;
+  font-size: 0.9rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
 }
 
-/* ─── Utility ───────────────────────────────────────────────────────────────── */
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 2px solid rgba(0, 255, 204, 0.15);
+  border-top-color: #00ffcc;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 20px;
+}
 
-.hidden { display: none !important; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =============================================================================
+   UTILITY
+   ============================================================================= */
+
+.hidden {
+  display: none !important;
+}

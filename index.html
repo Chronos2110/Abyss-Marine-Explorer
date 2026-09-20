@@ -1,128 +1,156 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com;">
-  <meta name="description"
-    content="ABYSS: Marine Explorer — Immersive side-by-side VR underwater exploration. Scan marine life, collect pollution, unlock the research station.">
-  <title>ABYSS: Marine Explorer</title>
-  <link rel="stylesheet" href="css/style.css">
-</head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ABYSS: Marine Explorer — Stereoscopic WebVR</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
 
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #010814;
+      font-family: 'Orbitron', monospace, sans-serif;
+    }
+
+    #vrCanvas, #hudCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    #hudCanvas {
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .ui-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 100;
+      background: rgba(2, 12, 27, 0.92);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #00ffcc;
+      text-align: center;
+      padding: 20px;
+      transition: opacity 0.5s ease, visibility 0.5s ease;
+    }
+
+    .ui-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    h1 {
+      font-size: 2.8rem;
+      letter-spacing: 6px;
+      margin-bottom: 12px;
+      text-shadow: 0 0 15px rgba(0, 255, 204, 0.6);
+    }
+
+    p {
+      font-family: 'Courier New', monospace;
+      color: #b2ebf2;
+      font-size: 1.1rem;
+      max-width: 550px;
+      line-height: 1.6;
+      margin-bottom: 30px;
+    }
+
+    .btn {
+      background: transparent;
+      border: 2px solid #00ffcc;
+      color: #00ffcc;
+      padding: 16px 42px;
+      font-size: 1.2rem;
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 700;
+      letter-spacing: 3px;
+      cursor: pointer;
+      box-shadow: 0 0 20px rgba(0, 255, 204, 0.3);
+      transition: all 0.3s ease;
+    }
+
+    .btn:hover, .btn:active {
+      background: #00ffcc;
+      color: #010814;
+      box-shadow: 0 0 35px rgba(0, 255, 204, 0.8);
+    }
+
+    .loader {
+      border: 4px solid rgba(0, 255, 204, 0.1);
+      border-left-color: #00ffcc;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 20px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
 <body>
 
-  <!-- ══════════════════════════════════════════
-       LOADING SCREEN
-       ══════════════════════════════════════════ -->
-  <div id="loadingOverlay">
-    <div class="ld-ring"></div>
-    <p class="ld-label">INITIALIZING SYSTEMS</p>
-    <p class="ld-sub">ABYSS MARINE EXPLORER v3</p>
-  </div>
-
-  <!-- ══════════════════════════════════════════
-       CANVAS STACK
-       #vrCanvas: position:fixed fills Capacitor WebView
-       #hudCanvas: dynamic reticle + numeric readouts
-       ══════════════════════════════════════════ -->
   <canvas id="vrCanvas"></canvas>
   <canvas id="hudCanvas"></canvas>
 
-  <!-- ══════════════════════════════════════════
-       HELMET VIGNETTE OVERLAY — static SVG layer
-       pointer-events:none, z-index:10 (above vrCanvas z:1, below HUD z:20)
-       Renders over BOTH stereoscopic viewports simultaneously.
-       Condensation streaks are static — dynamic reticle stays on hudCanvas.
-       ══════════════════════════════════════════ -->
-  <div id="helmetOverlay" aria-hidden="true">
-    <!-- Oval vignette radial gradient — handled in CSS via ::before pseudo -->
-
-    <!-- SVG frame arc + condensation streaks -->
-    <svg id="helmetSVG" xmlns="http://www.w3.org/2000/svg"
-         preserveAspectRatio="none" viewBox="0 0 1000 500">
-
-      <!-- Outer helmet frame ellipse — stroke only, no fill -->
-      <ellipse cx="500" cy="250" rx="494" ry="245"
-               fill="none" stroke="#1a3a4a" stroke-width="3" opacity="0.85"/>
-
-      <!-- Left eye condensation streaks (upper-left quadrant) -->
-      <line x1="68"  y1="18"  x2="60"  y2="90"  stroke="white" stroke-width="4" opacity="0.05"/>
-      <line x1="102" y1="12"  x2="96"  y2="78"  stroke="white" stroke-width="3" opacity="0.07"/>
-      <line x1="140" y1="20"  x2="132" y2="82"  stroke="white" stroke-width="2" opacity="0.04"/>
-      <line x1="175" y1="14"  x2="171" y2="68"  stroke="white" stroke-width="3" opacity="0.06"/>
-      <line x1="88"  y1="38"  x2="82"  y2="100" stroke="white" stroke-width="2" opacity="0.03"/>
-
-      <!-- Right eye condensation streaks (upper-right quadrant) -->
-      <line x1="568"  y1="18"  x2="560"  y2="90"  stroke="white" stroke-width="4" opacity="0.06"/>
-      <line x1="602" y1="12"  x2="596"  y2="78"  stroke="white" stroke-width="3" opacity="0.05"/>
-      <line x1="640" y1="20"  x2="632" y2="82"  stroke="white" stroke-width="2" opacity="0.07"/>
-      <line x1="675" y1="14"  x2="671" y2="68"  stroke="white" stroke-width="3" opacity="0.04"/>
-      <line x1="588"  y1="38"  x2="582"  y2="100" stroke="white" stroke-width="2" opacity="0.08"/>
-
-      <!-- Center nose bridge divider — subtle vertical bar -->
-      <line x1="500" y1="60" x2="500" y2="440"
-            stroke="#1a3a4a" stroke-width="2" opacity="0.55"/>
-    </svg>
+  <!-- Preloader Screen -->
+  <div id="loadingOverlay" class="ui-overlay">
+    <div class="loader"></div>
+    <h1>ABYSS INITIALIZING</h1>
+    <p>Constructing 360° Oceanic Environment & Calibrating VR Telemetry...</p>
   </div>
 
-  <!-- ══════════════════════════════════════════
-       START / PERMISSION OVERLAY  (#overlay)
-       ══════════════════════════════════════════ -->
-  <div id="overlay">
-    <canvas id="bgParticles"></canvas>
-
-    <div class="menu-card">
-      <div class="menu-eyebrow">DEEP SEA MISSION</div>
-      <h1 class="menu-title">ABYSS</h1>
-      <p class="menu-sub">MARINE EXPLORER</p>
-      <div class="menu-divider"></div>
-
-      <p class="menu-brief">
-        Descend into a living deep-sea ecosystem.<br>
-        Scan five species, remove four pollution sources,<br>
-        activate the power conduit, and unlock the research station<br>
-        before your oxygen runs out.
-      </p>
-
-      <div class="inst-grid">
-        <div class="inst-cell"><span class="inst-key">LOOK</span>Drag or tilt device to explore</div>
-        <div class="inst-cell"><span class="inst-key">SWIM</span>Nose-down gaze (−18° to −38°)</div>
-        <div class="inst-cell"><span class="inst-key">INTERACT</span>Gaze at objects for 2 s</div>
-        <div class="inst-cell"><span class="inst-key">OBJECTIVE</span>5 species · 4 pollution · conduit · station</div>
-      </div>
-
-      <button id="diveBtn" class="cta-btn">▼ &nbsp;DIVE IN&nbsp; ▼</button>
-    </div>
+  <!-- Start Menu Overlay -->
+  <div id="overlay" class="ui-overlay hidden">
+    <h1>ABYSS: MARINE EXPLORER</h1>
+    <p>Insert mobile device into VR Headset (Google Cardboard). Move gaze crosshair over targets for 2 seconds to scan fauna, clear toxic debris, and complete multi-phase survey missions.</p>
+    <button id="startBtn" class="btn">ENTER ABYSS VR</button>
   </div>
 
-  <!-- ══════════════════════════════════════════
-       MISSION RESULT OVERLAY  (#endOverlay)
-       ══════════════════════════════════════════ -->
-  <div id="endOverlay" class="hidden">
-    <div class="menu-card end-card">
-      <div id="endEyebrow" class="menu-eyebrow"></div>
-      <h2 id="endTitle" class="end-title"></h2>
-      <p id="endMsg" class="end-msg"></p>
-      <button id="restartBtn" class="cta-btn">↺ &nbsp;SURFACE</button>
-    </div>
+  <!-- Game Over / Victory Overlay -->
+  <div id="gameOverlay" class="ui-overlay hidden">
+    <h1 id="overlayTitle">SYSTEM STATUS</h1>
+    <p id="overlayMsg">Mission status update.</p>
+    <button id="restartBtn" class="btn">REBOOT SUBMERSIBLE</button>
   </div>
 
-  <!-- ══════════════════════════════════════════
-       SCRIPTS — dependency order
-       Three.js r128 via CDN (relative-path compatible)
-       ══════════════════════════════════════════ -->
+<!-- Three.js & GLTFLoader Dependencies -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="js/audio.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+  <!-- Application Modules (Updated with js/ path) -->
+  <script src="js/controls.js"></script>
   <script src="js/environment.js"></script>
   <script src="js/entities.js"></script>
-  <script src="js/controls.js"></script>
+  <script src="js/audio.js"></script>
   <script src="js/main.js"></script>
-
 </body>
-
 </html>

@@ -1,1092 +1,608 @@
 /* =============================================================================
-   ABYSS: Marine Explorer — js/entities.js  v5
-   FIX 1: Fauna Dispersion & Independent Animation
-   
-   CRITICAL RUNTIME ARCHITECTURE:
-   - Hardcoded spawn coordinates for all fauna — zero random clustering.
-   - Per-instance userData schema on EVERY fauna group:
-       id:      `${type}_${index}`
-       type:    'fauna'
-       scanned: false
-       origin:  group.position.clone()  (immutable spawn anchor)
-       phase:   index * 1.35            (unique per instance — no shared phase)
-       speed:   0.8 + Math.random() * 0.4
-   - Animation Loop (update(elapsedTime, delta)):
-       Every position & rotation update reads g.userData.phase and g.userData.origin.
-       Never reads or mutates a shared closure variable across instances.
-       No two instances share a phase value or origin reference.
-   - All entities in faunaList are also in window.ABYSS.EntityManager.interactables[].
-   - ZERO shader recompilation: emissiveIntensity set once at construction;
-     scan highlight uses emissive.setHex() only.
-   - Research Hub terminals: O2_REFILL, SPECIMEN_DEPOSIT, WASTE_DISPOSAL.
-   - 4 Pollution items + Power Conduit wire-up.
+   ABYSS: Marine Explorer — Core Entities & Biological Systems Module
+   =============================================================================
+   * Procedural Fauna Mesh Generation & Anatomical Construction
+   * GLTF/GLB Async Biological Asset Pipeline & Fallback System
+   * 360-Degree Spatial Ecosystem Distribution Across 8 World Quadrants
+   * Kinematic Animation Engines (Sinusoidal Undulation, Wing Flapping, Schooling)
+   * Interactive Metadata Registration & Scanning Payload Binding
    ============================================================================= */
 
 window.ABYSS = window.ABYSS || {};
 
-(function () {
+ABYSS.Entities = (function () {
   'use strict';
 
-  /* ─── Module state ──────────────────────────────────────────────────────────── */
-  var _scene         = null;
+  /* ===========================================================================
+     1. PRIVATE MODULE STATE & REGISTRIES
+     =========================================================================== */
+
+  var _scene = null;
   var _interactables = [];
-  var _fauna         = [];      // all animated groups incl. shark
-  var _pollution     = [];
-  var _shark         = null;
+  var _faunaRegistry = [];
+  var _gltfLoader = null;
+  var _isGltfSupported = false;
 
-  // Subsea terminal refs (needed by update() for animation)
-  var _specimenJar   = null;   // holographic jar mesh — hovers above SPECIMEN_DEPOSIT
-  var _wasteHatch    = null;   // hatch mesh — lerp rotation target
-  var _o2Light       = null;   // PointLight inside O2 tank — dims during cooldown
-  var _specimenLight = null;   // PointLight above jar
-  var _o2Terminal    = null;   // O2_REFILL terminal mesh ref (for cooldown visual)
+  /* ===========================================================================
+     2. MODULE INITIALIZATION & SPAWN TABLE
+     =========================================================================== */
 
-  /* ─── Shark waypoint circuit (radius 44, centered around (0, 4.5, -30)) ─────── */
-  var SHARK_WAYPOINTS = [
-    new THREE.Vector3( 44, 4.5, -30),
-    new THREE.Vector3(  0, 5.0,  14),
-    new THREE.Vector3(-44, 4.0, -30),
-    new THREE.Vector3(  0, 4.8, -74)
-  ];
+  function init(scene, interactablesArray) {
+    _scene = scene;
+    _interactables = interactablesArray;
 
-  /* ─── Static predefined pollution materials ─────────────────────────────────── */
-  var POLLUTION_BAG_MAT_1    = null;
-  var POLLUTION_BAG_MAT_2    = null;
-  var POLLUTION_BARREL_MAT_1 = null;
-  var POLLUTION_BARREL_MAT_2 = null;
+    _initializeLoader();
 
-  function _initPollutionMaterials() {
-    if (POLLUTION_BAG_MAT_1) return;
-    POLLUTION_BAG_MAT_1 = new THREE.MeshPhongMaterial({
-      color: 0xdde8ff, transparent: true, opacity: 0.52,
-      shininess: 90, side: THREE.DoubleSide
-    });
-    POLLUTION_BAG_MAT_2 = new THREE.MeshPhongMaterial({
-      color: 0xfff8f0, transparent: true, opacity: 0.48,
-      shininess: 80, side: THREE.DoubleSide
-    });
-    POLLUTION_BARREL_MAT_1 = new THREE.MeshPhongMaterial({
-      color: 0xbb3300, shininess: 18,
-      emissive: 0x220800, emissiveIntensity: 0.5
-    });
-    POLLUTION_BARREL_MAT_2 = new THREE.MeshPhongMaterial({
-      color: 0x7a4422, shininess: 12,
-      emissive: 0x100500, emissiveIntensity: 0.5
-    });
+    // Quadrant 1: North-West Trench (Depth -10 to -22)
+    _buildSeaTurtle(-85, -8, -110, 'fauna_turtle_01', 'Hawksbill Sea Turtle Alpha');
+    _buildJellyfishCluster(-120, -2, -90, 6, 'fauna_jelly_q1');
+
+    // Quadrant 2: North-East Abyssal Plain (Depth -5 to -20)
+    _buildClownfishSchool(95, -16, -120, 10, 'fauna_clown_q2');
+    _buildMantaRay(140, 2, -80, 'fauna_manta_01', 'Giant Oceanic Manta Ray');
+
+    // Quadrant 3: South-East Coral Shelf (Depth -12 to -25)
+    _buildBioluminescentEel(110, -21, 95, 'fauna_eel_01', 'Abyssal Bioluminescent Eel');
+    _buildJellyfishCluster(75, 4, 130, 8, 'fauna_jelly_q3');
+
+    // Quadrant 4: South-West Shipwreck Zone (Depth -15 to -26)
+    _buildApexShark(-150, -6, 110, 'fauna_shark_01', 'Apex Deep Sea Predator');
+    _buildClownfishSchool(-90, -18, 140, 8, 'fauna_clown_q4');
+
+    // Quadrant 5: Outer Deep Rim & Hydrothermal Vents (360 Scatter Fill)
+    _buildSeaTurtle(160, -12, -150, 'fauna_turtle_02', 'Hawksbill Sea Turtle Beta');
+    _buildMantaRay(-170, 8, -160, 'fauna_manta_02', 'Pelagic Manta Ray');
+    _buildAnglerfish(-45, -23, -170, 'fauna_angler_01', 'Deep-Trench Anglerfish');
+    _buildAnglerfish(130, -22, 160, 'fauna_angler_02', 'Abyssal Anglerfish');
+    _buildGiantIsopod(-65, -26, 75, 'fauna_isopod_01', 'Benthic Giant Isopod');
+    _buildGiantIsopod(85, -26, -65, 'fauna_isopod_02', 'Seabed Scavenger Isopod');
   }
 
-  /* ─── Clownfish stripe texture (canvas 2D) ──────────────────────────────────── */
-  function _makeClownTex() {
-    var cv = document.createElement('canvas');
-    cv.width = 128; cv.height = 256;
-    var c   = cv.getContext('2d');
-    c.fillStyle = '#ff6000';
-    c.fillRect(0, 0, 128, 256);
-    c.fillStyle = '#ffffff';
-    c.fillRect(0, Math.floor(256 * 0.36), 128, Math.floor(256 * 0.10));
-    c.fillStyle = '#ffffff';
-    c.fillRect(0, Math.floor(256 * 0.60), 128, Math.floor(256 * 0.08));
-    c.fillStyle = '#000';
-    [0.35, 0.46, 0.59, 0.68].forEach(function (f) {
-      c.fillRect(0, Math.floor(256 * f), 128, 3);
-    });
-    var tex = new THREE.CanvasTexture(cv);
-    tex.needsUpdate = true;
-    return tex;
+  function _initializeLoader() {
+    if (typeof THREE !== 'undefined' && typeof THREE.GLTFLoader !== 'undefined') {
+      _gltfLoader = new THREE.GLTFLoader();
+      _isGltfSupported = true;
+    } else {
+      console.warn('ABYSS.Entities: THREE.GLTFLoader unavailable. Running procedural fallback mode.');
+      _isGltfSupported = false;
+    }
   }
 
-  /* ─── Register fauna group with mandatory userData schema ───────────────────── */
-  function _registerFauna(group, type, index) {
-    group.userData = {
-      id:      type + '_' + index,
-      type:    'fauna',
-      species: type,
+  /* ===========================================================================
+     3. ASYNC EXTERNAL ASSET PIPELINE (GLTF/GLB)
+     =========================================================================== */
+
+  function loadGLBModel(assetUrl, posX, posY, posZ, scaleFactor, id, displayName, onSuccessCallback) {
+    if (!_isGltfSupported || !_gltfLoader) {
+      console.warn('ABYSS.Entities: GLTFLoader engine not mounted. Cannot load ' + assetUrl);
+      return;
+    }
+
+    _gltfLoader.load(
+      assetUrl,
+      function (gltfContainer) {
+        var loadedModel = gltfContainer.scene;
+        loadedModel.position.set(posX, posY, posZ);
+        loadedModel.scale.set(scaleFactor, scaleFactor, scaleFactor);
+
+        loadedModel.userData = {
+          type: 'fauna',
+          id: id || ('glb_entity_' + Math.random().toString(36).substr(2, 7)),
+          name: displayName || 'Unidentified Marine Species',
+          scanned: false,
+          isExternalModel: true
+        };
+
+        _scene.add(loadedModel);
+        _interactables.push(loadedModel);
+
+        _faunaRegistry.push({
+          mesh: loadedModel,
+          animType: 'glb_custom',
+          basePosition: new THREE.Vector3(posX, posY, posZ),
+          rotationSpeed: 0.2
+        });
+
+        if (typeof onSuccessCallback === 'function') {
+          onSuccessCallback(loadedModel);
+        }
+      },
+      function (xhrProgress) {
+        if (xhrProgress.lengthComputable) {
+          var percentComplete = (xhrProgress.loaded / xhrProgress.total) * 100;
+          console.log('Asset Loading [' + id + ']: ' + percentComplete.toFixed(1) + '%');
+        }
+      },
+      function (loadError) {
+        console.error('ABYSS.Entities: Error loading external GLB asset (' + assetUrl + '):', loadError);
+      }
+    );
+  }
+
+  /* ===========================================================================
+     4. ENTITY REGISTRATION & METADATA BINDING
+     =========================================================================== */
+
+  function _registerFaunaNode(groupNode, entityId, displayName, animationCategory, x, y, z) {
+    groupNode.position.set(x, y, z);
+
+    groupNode.userData = {
+      type: 'fauna',
+      id: entityId,
+      name: displayName,
       scanned: false,
-      origin:  group.position.clone(),     // immutable spawn anchor
-      phase:   index * 1.35,               // unique per instance — NO shared phase
-      speed:   0.8 + Math.random() * 0.4
+      timestampLogged: 0
     };
 
-    group.traverse(function (c) {
-      if (c.isMesh) {
-        c.userData.faunaGroup = group;
-        c.userData.faunaId    = group.userData.id;
-        c.userData.species    = type;
-      }
-    });
+    _scene.add(groupNode);
+    _interactables.push(groupNode);
 
-    _interactables.push(group);
-    _fauna.push(group);
-    if (_scene) _scene.add(group);
+    _faunaRegistry.push({
+      mesh: groupNode,
+      animType: animationCategory,
+      basePosition: new THREE.Vector3(x, y, z),
+      phaseOffset: Math.random() * Math.PI * 2,
+      velocity: new THREE.Vector3(0, 0, 0)
+    });
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════════
-     MODULE 2 — SUBSEA RESEARCH HUB TERMINALS
-     ═══════════════════════════════════════════════════════════════════════════════ */
+  /* ===========================================================================
+     5. PROCEDURAL ANATOMICAL MESH BUILDERS
+     =========================================================================== */
 
-  /* ─── TERMINAL 1: O2_REFILL ─────────────────────────────────────────────────── */
-  function _buildO2Refill(x, y, z) {
-    var group = new THREE.Group();
-    group.position.set(x, y, z);
+  /* --- A. TURTLE BUILDER --- */
+  function _buildSeaTurtle(x, y, z, id, name) {
+    var turtleGroup = new THREE.Group();
 
-    // Main tank cylinder — cyan glowing casing
-    var tankMat = new THREE.MeshPhongMaterial({
-      color:             0x006688,
-      emissive:          0x003344,
-      emissiveIntensity: 0.5,
-      shininess:         90,
-      specular:          0x44aacc
-    });
-    var tank = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 2.2, 10), tankMat);
-    tank.position.set(0, 1.1, 0);
-    group.add(tank);
-
-    // Intake collar ring
-    var collarMat = new THREE.MeshPhongMaterial({
-      color: 0x224455, emissive: 0x002233, emissiveIntensity: 0.5, shininess: 60
-    });
-    var collar = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.45, 8), collarMat);
-    collar.position.set(0, 2.42, 0);
-    group.add(collar);
-
-    // Intake nozzle
-    var nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.6, 6), collarMat);
-    nozzle.rotation.z = Math.PI / 2;
-    nozzle.position.set(0.52, 2.42, 0);
-    group.add(nozzle);
-
-    // Gauge ring belt around middle of tank
-    var gaugeMat = new THREE.MeshPhongMaterial({
-      color:             0x00ffcc,
-      emissive:          0x00ffcc,
-      emissiveIntensity: 0.5,
-      shininess:         120
-    });
-    var gauge = new THREE.Mesh(new THREE.TorusGeometry(0.56, 0.04, 6, 16), gaugeMat);
-    gauge.rotation.x = Math.PI / 2;
-    gauge.position.set(0, 1.1, 0);
-    group.add(gauge);
-
-    // Indicator LED strip
-    var ledMat = new THREE.MeshPhongMaterial({
-      color: 0x00ffcc, emissive: 0x00ffcc, emissiveIntensity: 0.5
-    });
-    for (var li = 0; li < 4; li++) {
-      var led = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.04), ledMat);
-      led.position.set(0.56, 0.5 + li * 0.38, 0);
-      group.add(led);
-    }
-
-    // Floor base plate
-    var baseMat = new THREE.MeshPhongMaterial({ color: 0x1a2a35, shininess: 20 });
-    var base    = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.18, 10), baseMat);
-    base.position.set(0, 0.09, 0);
-    group.add(base);
-
-    // Accent PointLight
-    var o2Light = new THREE.PointLight(0x00ffcc, 2.0, 9);
-    o2Light.position.set(0, 2.0, 0);
-    group.add(o2Light);
-
-    // Interactable root
-    group.userData.type          = 'terminal';
-    group.userData.id            = 'o2_refill';
-    group.userData.cooldown      = false;
-    group.userData.cooldownStart = 0;
-    group.userData.cooldownSecs  = 30;
-
-    group.traverse(function (c) {
-      if (c.isMesh) {
-        c.userData.terminalGroup = group;
-        c.userData.terminalId    = 'o2_refill';
-      }
-    });
-
-    _interactables.push(group);
-    if (_scene) _scene.add(group);
-
-    _o2Terminal = group;
-    _o2Light    = o2Light;
-  }
-
-  /* ─── TERMINAL 2: SPECIMEN_DEPOSIT ──────────────────────────────────────────── */
-  function _buildSpecimenDeposit(x, y, z) {
-    var group = new THREE.Group();
-    group.position.set(x, y, z);
-
-    // Console base body
-    var baseMat = new THREE.MeshPhongMaterial({
-      color: 0x0a2a14, emissive: 0x041208, emissiveIntensity: 0.3, shininess: 30
-    });
-    var consoleBody = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.9, 1.4), baseMat);
-    consoleBody.position.set(0, 0.45, 0);
-    group.add(consoleBody);
-
-    // Angled top surface
-    var surroundMat = new THREE.MeshPhongMaterial({
-      color: 0x0d3318, emissive: 0x051a0a, emissiveIntensity: 0.3, shininess: 20
-    });
-    var surround = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.08, 1.2), surroundMat);
-    surround.position.set(0, 0.94, 0);
-    group.add(surround);
-
-    // Three screen panels
-    var screenMat = new THREE.MeshPhongMaterial({
-      color:             0x00ff77,
-      emissive:          0x004422,
-      emissiveIntensity: 0.5,
-      transparent:       true,
-      opacity:           0.88,
-      shininess:         160
-    });
-    var screenPositions = [-0.72, 0, 0.72];
-    screenPositions.forEach(function (sx) {
-      var screen = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.38, 0.04), screenMat);
-      screen.position.set(sx, 0.94, -0.42);
-      screen.rotation.x = -0.32;
-      group.add(screen);
-    });
-
-    // Specimen tray slot
-    var trayMat = new THREE.MeshPhongMaterial({
-      color: 0x001a08, emissive: 0x001a08, emissiveIntensity: 0.5, shininess: 8
-    });
-    var tray = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.05, 0.6), trayMat);
-    tray.position.set(0, 0.96, 0.25);
-    group.add(tray);
-
-    // Tray rim glow strip
-    var rimMat = new THREE.MeshPhongMaterial({
-      color: 0x00ff77, emissive: 0x00ff77, emissiveIntensity: 0.5
-    });
-    var rim = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.025, 4, 16), rimMat);
-    rim.rotation.x = Math.PI / 2;
-    rim.position.set(0, 0.98, 0.25);
-    group.add(rim);
-
-    // Base legs (4 corners)
-    var legMat = new THREE.MeshPhongMaterial({ color: 0x0d1f10, shininess: 10 });
-    [[-1.0, 0.55], [1.0, 0.55], [-1.0, -0.55], [1.0, -0.55]].forEach(function (lp) {
-      var leg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.38, 5), legMat);
-      leg.position.set(lp[0], 0.19, lp[1]);
-      group.add(leg);
-    });
-
-    // Accent light under jar
-    var specLight = new THREE.PointLight(0x00ff77, 1.8, 7);
-    specLight.position.set(0, 2.8, 0);
-    group.add(specLight);
-
-    // ── Holographic Jar ──
-    var jarGroup = new THREE.Group();
-    jarGroup.position.set(0, 2.0, 0);
-
-    var jarBodyMat = new THREE.MeshPhongMaterial({
-      color:             0x88ffcc,
-      emissive:          0x00aa55,
-      emissiveIntensity: 0.5,
-      transparent:       true,
-      opacity:           0.42,
-      shininess:         200,
-      side:              THREE.DoubleSide
-    });
-    var jarBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.22, 0.18, 0.54, 10, 1, true),
-      jarBodyMat
-    );
-    jarGroup.add(jarBody);
-
-    var lidMat = new THREE.MeshPhongMaterial({
-      color: 0x44ddaa, emissive: 0x00aa55, emissiveIntensity: 0.5,
-      transparent: true, opacity: 0.58, shininess: 180
-    });
-    var lid = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.04, 10), lidMat);
-    lid.position.y = 0.28;
-    jarGroup.add(lid);
-
-    var jarBase = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.04, 10), lidMat);
-    jarBase.position.y = -0.27;
-    jarGroup.add(jarBase);
-
-    var contentMat = new THREE.MeshPhongMaterial({
-      color: 0xaaffdd, emissive: 0x00ff88, emissiveIntensity: 0.5,
-      transparent: true, opacity: 0.55
-    });
-    var content = new THREE.Mesh(new THREE.SphereGeometry(0.10, 6, 5), contentMat);
-    content.position.y = 0.0;
-    jarGroup.add(content);
-
-    group.add(jarGroup);
-
-    group.userData.type      = 'terminal';
-    group.userData.id        = 'specimen_deposit';
-    group.userData.deposited = 0;
-    group.userData.jarGroup  = jarGroup;
-
-    group.traverse(function (c) {
-      if (c.isMesh) {
-        c.userData.terminalGroup = group;
-        c.userData.terminalId    = 'specimen_deposit';
-      }
-    });
-
-    _interactables.push(group);
-    if (_scene) _scene.add(group);
-
-    _specimenJar   = jarGroup;
-    _specimenLight = specLight;
-  }
-
-  /* ─── TERMINAL 3: WASTE_DISPOSAL ────────────────────────────────────────────── */
-  function _buildWasteDisposal(x, y, z) {
-    var group = new THREE.Group();
-    group.position.set(x, y, z);
-
-    var frameMat = new THREE.MeshPhongMaterial({
-      color: 0x2a2e2e, emissive: 0x0a0e0e, emissiveIntensity: 0.3, shininess: 18
-    });
-
-    var frameOuter = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 0.14, 8), frameMat);
-    frameOuter.position.set(0, 0.07, 0);
-    group.add(frameOuter);
-
-    var lipMat = new THREE.MeshPhongMaterial({ color: 0x1a1e1e, shininess: 8 });
-    var lip    = new THREE.Mesh(new THREE.CylinderGeometry(0.88, 0.88, 0.08, 8), lipMat);
-    lip.position.set(0, 0.14, 0);
-    group.add(lip);
-
-    var hazardMat = new THREE.MeshPhongMaterial({
-      color: 0xffaa00, emissive: 0x441800, emissiveIntensity: 0.5, shininess: 60
-    });
-    var hazard = new THREE.Mesh(new THREE.TorusGeometry(1.06, 0.05, 5, 8), hazardMat);
-    hazard.rotation.x = Math.PI / 2;
-    hazard.position.y = 0.14;
-    group.add(hazard);
-
-    for (var hi = 0; hi < 4; hi++) {
-      var angle = (hi / 4) * Math.PI * 2;
-      var wedge = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.12), hazardMat);
-      wedge.position.set(Math.cos(angle) * 0.95, 0.15, Math.sin(angle) * 0.95);
-      wedge.rotation.y = angle;
-      group.add(wedge);
-    }
-
-    var hatchGroup = new THREE.Group();
-    hatchGroup.position.set(0, 0.14, 0);
-
-    var hatchMat = new THREE.MeshPhongMaterial({
-      color: 0x3a4040, emissive: 0x0a0e0e, emissiveIntensity: 0.3, shininess: 40
-    });
-    var centreDisc = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.06, 8), hatchMat);
-    hatchGroup.add(centreDisc);
-
-    var bladeMat = new THREE.MeshPhongMaterial({
-      color: 0x3d4545, emissive: 0x0c1010, emissiveIntensity: 0.3, shininess: 30
-    });
-    for (var bi = 0; bi < 3; bi++) {
-      var ba    = (bi / 3) * Math.PI * 2;
-      var blade = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.05, 0.32), bladeMat);
-      blade.position.set(Math.cos(ba) * 0.44, 0, Math.sin(ba) * 0.44);
-      blade.rotation.y = ba + Math.PI * 0.5;
-      hatchGroup.add(blade);
-
-      var edgeMat = new THREE.MeshPhongMaterial({
-        color: 0x556666, emissive: 0x112222, emissiveIntensity: 0.3
-      });
-      var edge = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.03, 0.04), edgeMat);
-      edge.position.set(Math.cos(ba) * 0.44, 0.04, Math.sin(ba) * 0.44 + 0.15);
-      edge.rotation.y = ba + Math.PI * 0.5;
-      hatchGroup.add(edge);
-    }
-
-    var lugMat = new THREE.MeshPhongMaterial({
-      color: 0x556655, emissive: 0x112211, emissiveIntensity: 0.3, shininess: 60
-    });
-    var lug = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.08), lugMat);
-    lug.position.y = 0.09;
-    hatchGroup.add(lug);
-
-    var statusMat = new THREE.MeshPhongMaterial({
-      color: 0x00ff44, emissive: 0x00ff44, emissiveIntensity: 0.5
-    });
-    var statusLED = new THREE.Mesh(new THREE.SphereGeometry(0.055, 5, 4), statusMat);
-    statusLED.position.set(1.0, 0.18, 0);
-    group.add(statusLED);
-
-    group.add(hatchGroup);
-
-    var pitLight = new THREE.PointLight(0xff6600, 0.0, 5);
-    pitLight.position.set(0, -0.5, 0);
-    group.add(pitLight);
-
-    group.userData.type       = 'terminal';
-    group.userData.id         = 'waste_disposal';
-    group.userData.hatchOpen  = false;
-    group.userData.targetRot  = 0;
-    group.userData.hatchGroup = hatchGroup;
-    group.userData.statusLED  = statusLED;
-    group.userData.pitLight   = pitLight;
-    group.userData.disposed   = 0;
-
-    group.traverse(function (c) {
-      if (c.isMesh) {
-        c.userData.terminalGroup = group;
-        c.userData.terminalId    = 'waste_disposal';
-      }
-    });
-
-    _interactables.push(group);
-    if (_scene) _scene.add(group);
-
-    _wasteHatch = group;
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════════════════
-     FAUNA BUILDERS (Per-Instance Construction)
-     ═══════════════════════════════════════════════════════════════════════════════ */
-
-  /* ─── 1. BIOLUMINESCENT EEL ─────────────────────────────────────────────────── */
-  function _buildEel(x, y, z, index) {
-    var g = new THREE.Group();
-    g.position.set(x, y, z);
-
-    var segments = [];
-    for (var i = 0; i < 8; i++) {
-      var tv     = i / 7;
-      var rad    = 0.22 - i * 0.014;
-      var segMat = new THREE.MeshPhongMaterial({
-        color:             new THREE.Color(0, 0.7 + tv * 0.3, 0.75 + tv * 0.25),
-        emissive:          new THREE.Color(0, 0.55, 0.8),
-        emissiveIntensity: 0.5,
-        transparent:       true,
-        opacity:           0.88,
-        shininess:         100
-      });
-      var seg = new THREE.Mesh(new THREE.SphereGeometry(rad, 6, 4), segMat);
-      seg.position.set(0, i * 0.33, 0);
-      seg.userData.segIdx = i;
-      g.add(seg);
-      segments.push(seg);
-    }
-
-    var finMat = new THREE.MeshPhongMaterial({
-      color: 0x00ffcc, emissive: 0x00aa88, emissiveIntensity: 0.5,
-      transparent: true, opacity: 0.7
-    });
-    var fin = new THREE.Mesh(new THREE.BoxGeometry(0.05, 2.5, 0.08), finMat);
-    fin.position.set(0.2, 1.2, 0);
-    g.add(fin);
-
-    g.userData.segments = segments;
-    _registerFauna(g, 'eel', index);
-  }
-
-  /* ─── 2. SEA TURTLE ─────────────────────────────────────────────────────────── */
-  function _buildTurtle(x, y, z, index) {
-    var g = new THREE.Group();
-    g.position.set(x, y, z);
-
+    // Carapace (Shell)
     var shellMat = new THREE.MeshPhongMaterial({
-      color: 0x2d5c20, emissive: 0x0a200a, emissiveIntensity: 0.25, shininess: 40
+      color: 0x2e5a3c,
+      roughness: 0.6,
+      shininess: 25,
+      flatShading: true
     });
-    var body = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 6), shellMat);
-    body.scale.set(1.2, 0.4, 0.8);
-    g.add(body);
+    var shellGeo = new THREE.SphereGeometry(2.4, 14, 12, 0, Math.PI * 2, 0, Math.PI / 1.9);
+    var shellMesh = new THREE.Mesh(shellGeo, shellMat);
+    shellMesh.scale.set(1.0, 0.42, 1.35);
+    turtleGroup.add(shellMesh);
 
-    var patMat = new THREE.MeshPhongMaterial({
-      color: 0x1a3a10, emissive: 0x051005, emissiveIntensity: 0.1, shininess: 20
-    });
-    var pat = new THREE.Mesh(new THREE.SphereGeometry(1.02, 6, 4), patMat);
-    pat.scale.set(1.2, 0.38, 0.8);
-    g.add(pat);
+    // Plastron (Under-shell)
+    var plastronMat = new THREE.MeshPhongMaterial({ color: 0x8a9a5b, roughness: 0.8 });
+    var plastronGeo = new THREE.CylinderGeometry(2.1, 2.1, 0.3, 12);
+    var plastronMesh = new THREE.Mesh(plastronGeo, plastronMat);
+    plastronMesh.position.y = -0.2;
+    turtleGroup.add(plastronMesh);
 
-    var headMat = new THREE.MeshPhongMaterial({ color: 0x3d6a2a, shininess: 30 });
-    var head    = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 4), headMat);
-    head.position.set(0, 0.05, 0.88);
-    g.add(head);
+    // Front Flippers
+    var flipperMat = new THREE.MeshPhongMaterial({ color: 0x3b7a51, roughness: 0.5 });
 
-    var eyeMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
-    [-0.1, 0.1].forEach(function (ex) {
-      var eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 4), eyeMat);
-      eye.position.set(ex, 0.08, 0.3);
-      head.add(eye);
-    });
+    var leftFlipperGeo = new THREE.BoxGeometry(2.8, 0.12, 0.9);
+    var leftFlipper = new THREE.Mesh(leftFlipperGeo, flipperMat);
+    leftFlipper.position.set(-2.2, -0.1, 0.9);
+    leftFlipper.rotation.z = -0.25;
+    leftFlipper.rotation.y = 0.3;
+    leftFlipper.name = 'leftFlipper';
+    turtleGroup.add(leftFlipper);
 
-    var flipMat = new THREE.MeshPhongMaterial({
-      color: 0x2d5c20, emissive: 0x091508, emissiveIntensity: 0.15
-    });
-    var flipDefs = [
-      { pos: [ 1.15, 0,  0.15], sz: [0.75, 0.08, 0.32] },
-      { pos: [-1.15, 0,  0.15], sz: [0.75, 0.08, 0.32] },
-      { pos: [ 0.85, 0, -0.50], sz: [0.52, 0.07, 0.24] },
-      { pos: [-0.85, 0, -0.50], sz: [0.52, 0.07, 0.24] }
-    ];
-    var flippers = [];
-    flipDefs.forEach(function (fd) {
-      var f = new THREE.Mesh(new THREE.BoxGeometry(fd.sz[0], fd.sz[1], fd.sz[2]), flipMat);
-      f.position.set(fd.pos[0], fd.pos[1], fd.pos[2]);
-      g.add(f);
-      flippers.push(f);
-    });
+    var rightFlipper = new THREE.Mesh(leftFlipperGeo, flipperMat);
+    rightFlipper.position.set(2.2, -0.1, 0.9);
+    rightFlipper.rotation.z = 0.25;
+    rightFlipper.rotation.y = -0.3;
+    rightFlipper.name = 'rightFlipper';
+    turtleGroup.add(rightFlipper);
 
-    g.userData.flippers = flippers;
-    _registerFauna(g, 'turtle', index);
+    // Hind Flippers
+    var rearFlipperGeo = new THREE.BoxGeometry(1.2, 0.1, 0.7);
+    var leftRear = new THREE.Mesh(rearFlipperGeo, flipperMat);
+    leftRear.position.set(-1.1, -0.15, -2.1);
+    turtleGroup.add(leftRear);
+
+    var rightRear = new THREE.Mesh(rearFlipperGeo, flipperMat);
+    rightRear.position.set(1.1, -0.15, -2.1);
+    turtleGroup.add(rightRear);
+
+    // Head & Neck
+    var headMat = new THREE.MeshPhongMaterial({ color: 0x3b7a51, shininess: 15 });
+    var headGeo = new THREE.SphereGeometry(0.75, 10, 10);
+    var headMesh = new THREE.Mesh(headGeo, headMat);
+    headMesh.position.set(0, 0.1, 2.4);
+    headMesh.scale.set(0.85, 0.75, 1.2);
+    turtleGroup.add(headMesh);
+
+    // Eyes
+    var eyeMat = new THREE.MeshBasicMaterial({ color: 0x050505 });
+    var leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), eyeMat);
+    leftEye.position.set(-0.45, 0.25, 2.7);
+    turtleGroup.add(leftEye);
+
+    var rightEye = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), eyeMat);
+    rightEye.position.set(0.45, 0.25, 2.7);
+    turtleGroup.add(rightEye);
+
+    _registerFaunaNode(turtleGroup, id, name, 'turtle', x, y, z);
   }
 
-  /* ─── 3. JELLYFISH ──────────────────────────────────────────────────────────── */
-  function _buildJellyfish(x, y, z, index) {
-    var g = new THREE.Group();
-    g.position.set(x, y, z);
+  /* --- B. JELLYFISH CLUSTER BUILDER --- */
+  function _buildJellyfishCluster(centerX, centerY, centerZ, population, idPrefix) {
+    for (var i = 0; i < population; i++) {
+      var jellyGroup = new THREE.Group();
 
-    var bellMat = new THREE.MeshPhongMaterial({
-      color: 0xaaddff, emissive: 0x224466, emissiveIntensity: 0.5,
-      transparent: true, opacity: 0.72, shininess: 120
-    });
-    var bell = new THREE.Mesh(
-      new THREE.SphereGeometry(0.8, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
-      bellMat
-    );
-    g.add(bell);
+      var capMat = new THREE.MeshPhongMaterial({
+        color: 0xff02aa,
+        transparent: true,
+        opacity: 0.65,
+        emissive: 0x660033,
+        emissiveIntensity: 0.6,
+        shininess: 90
+      });
 
-    var tendMat = new THREE.MeshPhongMaterial({
-      color: 0xaaddff, transparent: true, opacity: 0.38,
-      emissive: 0x113355, emissiveIntensity: 0.3
-    });
-    for (var i = 0; i < 6; i++) {
-      var angle = (i / 6) * Math.PI * 2;
-      var len   = 1.3 + Math.random() * 0.7;
-      var t     = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.007, len, 4), tendMat);
-      t.position.set(Math.cos(angle) * 0.44, -0.9 - len * 0.5, Math.sin(angle) * 0.44);
-      g.add(t);
-    }
+      var capGeo = new THREE.SphereGeometry(1.3, 16, 16, 0, Math.PI * 2, 0, Math.PI / 1.7);
+      var capMesh = new THREE.Mesh(capGeo, capMat);
+      jellyGroup.add(capMesh);
 
-    g.userData.bell = bell;
-    _registerFauna(g, 'jellyfish', index);
-  }
+      var innerCoreMat = new THREE.MeshBasicMaterial({
+        color: 0x00ffff,
+        transparent: true,
+        opacity: 0.8
+      });
+      var innerCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.5, 2), innerCoreMat);
+      innerCore.position.y = -0.3;
+      jellyGroup.add(innerCore);
 
-  /* ─── 4. CLOWNFISH SCHOOL ───────────────────────────────────────────────────── */
-  function _buildClownfish(x, y, z, index) {
-    var g = new THREE.Group();
-    g.position.set(x, y, z);
+      var tentacleMat = new THREE.MeshBasicMaterial({
+        color: 0xff66cc,
+        transparent: true,
+        opacity: 0.6
+      });
 
-    var clownTex = _makeClownTex();
-    var bodyMat  = new THREE.MeshPhongMaterial({ map: clownTex, shininess: 60 });
-    var tailMat  = new THREE.MeshPhongMaterial({
-      color: 0xff8800, emissive: 0x441100, emissiveIntensity: 0.5
-    });
+      var tentacleCount = 8;
+      for (var t = 0; t < tentacleCount; t++) {
+        var angle = (t / tentacleCount) * Math.PI * 2;
+        var tentacleGeo = new THREE.CylinderGeometry(0.03, 0.01, 3.8, 6);
+        var tentacleMesh = new THREE.Mesh(tentacleGeo, tentacleMat);
+        tentacleMesh.position.set(Math.cos(angle) * 0.75, -2.0, Math.sin(angle) * 0.75);
+        jellyGroup.add(tentacleMesh);
+      }
 
-    for (var f = 0; f < 3; f++) {
-      var sub  = new THREE.Group();
-      var body = new THREE.Mesh(new THREE.SphereGeometry(0.3, 6, 4), bodyMat);
-      var tail = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.28, 4), tailMat);
-      tail.rotation.z = Math.PI / 2;
-      tail.position.set(-0.35, 0, 0);
-      body.add(tail);
-      sub.add(body);
-      sub.userData.phase = f * (Math.PI * 2 / 3);
-      g.add(sub);
-    }
+      var offsetX = centerX + (Math.random() - 0.5) * 18.0;
+      var offsetY = centerY + (Math.random() - 0.5) * 8.0;
+      var offsetZ = centerZ + (Math.random() - 0.5) * 18.0;
 
-    _registerFauna(g, 'clownfish', index);
-  }
-
-  /* ─── 5. MANTA RAY ──────────────────────────────────────────────────────────── */
-  function _buildMantaRay(x, y, z, index) {
-    var g = new THREE.Group();
-    g.position.set(x, y, z);
-
-    var topMat = new THREE.MeshPhongMaterial({
-      color: 0x151528, emissive: 0x040410, emissiveIntensity: 0.5, shininess: 20
-    });
-    var bellyMat = new THREE.MeshPhongMaterial({
-      color: 0xffffff, emissive: 0x112233, emissiveIntensity: 0.5, shininess: 8
-    });
-
-    g.add(new THREE.Mesh(new THREE.BoxGeometry(3, 0.15, 1.5), topMat));
-
-    var belly = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.07, 1.3), bellyMat);
-    belly.position.y = -0.04;
-    g.add(belly);
-
-    var wings = [];
-    [[-2.1, 0.02, 0],[2.1, 0.02, 0]].forEach(function (wp, wi) {
-      var wTop = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.06, 1.1), topMat);
-      wTop.position.set(wp[0], wp[1], wp[2]);
-      wTop.rotation.z = (wi === 0 ? 0.2 : -0.2);
-
-      var wBelly = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.04, 1.1), bellyMat);
-      wBelly.position.set(wp[0], wp[1] - 0.04, wp[2]);
-      wBelly.rotation.z = (wi === 0 ? 0.2 : -0.2);
-
-      g.add(wTop);
-      g.add(wBelly);
-      wings.push(wTop);
-    });
-
-    var tail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.02, 2.2, 4), topMat);
-    tail.rotation.z = Math.PI / 2;
-    tail.position.set(0, 0, -1.3);
-    g.add(tail);
-
-    [-0.35, 0.35].forEach(function (cx) {
-      var cf = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.08, 0.4), topMat);
-      cf.position.set(cx, 0, 0.85);
-      g.add(cf);
-    });
-
-    g.userData.wings = wings;
-    _registerFauna(g, 'mantaray', index);
-  }
-
-  /* ─── 6. PATROL SHARK ───────────────────────────────────────────────────────── */
-  function _buildShark(index) {
-    var g   = new THREE.Group();
-    var mat = new THREE.MeshPhongMaterial({
-      color: 0x5577aa, specular: 0x8899bb, shininess: 60
-    });
-
-    var body = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 6), mat);
-    body.scale.set(3.2, 0.68, 0.82);
-    g.add(body);
-
-    var df = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.95, 0.55), mat);
-    df.position.set(0.4, 0.75, 0);
-    g.add(df);
-
-    var cf = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.8, 0.55), mat);
-    cf.position.set(-2.9, 0.1, 0);
-    cf.rotation.z = 0.4;
-    g.add(cf);
-
-    [0.7, -0.7].forEach(function (pz) {
-      var pf = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.07, 0.5), mat);
-      pf.position.set(0.5, -0.25, pz);
-      g.add(pf);
-    });
-
-    var bellyMat = new THREE.MeshPhongMaterial({ color: 0x8aabb8, shininess: 40 });
-    var belly    = new THREE.Mesh(new THREE.SphereGeometry(0.95, 8, 4), bellyMat);
-    belly.scale.set(2.8, 0.4, 0.65);
-    belly.position.y = -0.22;
-    g.add(belly);
-
-    g.position.copy(SHARK_WAYPOINTS[0]);
-    g.userData.tailFin = cf;
-    g.userData.isShark = true;
-
-    _registerFauna(g, 'shark', index !== undefined ? index : 0);
-    _shark = g;
-    return g;
-  }
-
-  /* ─── 7. POLLUTION ──────────────────────────────────────────────────────────── */
-  function buildPollution(scene) {
-    var targetScene = scene || _scene;
-    _initPollutionMaterials();
-
-    var defs = [
-      { geo: new THREE.PlaneGeometry(0.8, 1.0, 2, 2),      mat: POLLUTION_BAG_MAT_1,    pos: [-5,  -6.5, -16], rot: [0.3, 0.5, 0.1]  },
-      { geo: new THREE.PlaneGeometry(0.8, 1.0, 2, 2),      mat: POLLUTION_BAG_MAT_2,    pos: [ 9,  -6.2, -21], rot: [0.1, 1.2, 0.2]  },
-      { geo: new THREE.CylinderGeometry(0.4, 0.4, 1.0, 8), mat: POLLUTION_BARREL_MAT_1, pos: [ 5,  -7.2, -23], rot: [0.1, 0.2, 0.05] },
-      { geo: new THREE.CylinderGeometry(0.4, 0.4, 1.0, 8), mat: POLLUTION_BARREL_MAT_2, pos: [-13, -7.2, -29], rot: [0.0, 0.8, 0.08] }
-    ];
-
-    defs.forEach(function (d, i) {
-      var m = new THREE.Mesh(d.geo, d.mat);
-      m.position.set(d.pos[0], d.pos[1], d.pos[2]);
-      m.rotation.set(d.rot[0], d.rot[1], d.rot[2]);
-      m.userData.type      = 'pollution';
-      m.userData.id        = 'pollution_' + i;
-      m.userData.collected = false;
-      m.userData.baseY     = d.pos[1];
-      m.userData.origin    = m.position.clone();
-
-      _pollution.push(m);
-      _interactables.push(m);
-      if (targetScene) targetScene.add(m);
-    });
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════════════════
-     buildAll — Hardcoded Fauna Dispersion (NO Random Clustering)
-     ═══════════════════════════════════════════════════════════════════════════════ */
-  function buildAll(scene) {
-    _scene         = scene;
-    _interactables = [];
-    _fauna         = [];
-    _pollution     = [];
-    _shark         = null;
-    _specimenJar   = null;
-    _wasteHatch    = null;
-    _o2Light       = null;
-    _specimenLight = null;
-    _o2Terminal    = null;
-
-    /* ── 1. Bioluminescent Eel: 5 instances at Trench Floor ── */
-    var EEL_SPAWNS = [
-      [ 12, -4.5, -24],
-      [-14, -5.2, -32],
-      [  6, -3.8, -40],
-      [ -8, -4.0, -18],
-      [ 15, -6.0, -46]
-    ];
-    EEL_SPAWNS.forEach(function (pos, i) {
-      _buildEel(pos[0], pos[1], pos[2], i);
-    });
-
-    /* ── 2. Sea Turtle: 3 instances at Varied Depths ── */
-    var TURTLE_SPAWNS = [
-      [-18, -1.5, -20],
-      [  8, -3.0, -35],
-      [ -5, -0.8, -15]
-    ];
-    TURTLE_SPAWNS.forEach(function (pos, i) {
-      _buildTurtle(pos[0], pos[1], pos[2], i);
-    });
-
-    /* ── 3. Jellyfish: 4 instances (Y: −1 to +4.5) ── */
-    var JELLY_SPAWNS = [
-      [-10,  3.5, -22],
-      [ 14,  1.8, -18],
-      [ -3,  4.2, -30],
-      [  9, -0.5, -25]
-    ];
-    JELLY_SPAWNS.forEach(function (pos, i) {
-      _buildJellyfish(pos[0], pos[1], pos[2], i);
-    });
-
-    /* ── 4. Clownfish School: 1 instance (Orbits Kelp Cluster) ── */
-    _buildClownfish(5, -2.0, -28, 0);
-
-    /* ── 5. Manta Ray: 1 instance (Wide upper-layer sweep) ── */
-    _buildMantaRay(0, 2.5, -38, 0);
-
-    /* ── 6. Patrol Shark: 1 instance (Perimeter circuit, radius 44) ── */
-    _buildShark(0);
-
-    /* ── 7. Pollution Artifacts (4) ── */
-    buildPollution(scene);
-
-    /* ── 8. Subsea Research Hub Terminals ── */
-    _buildO2Refill      (-12, -8, -50);
-    _buildSpecimenDeposit(14, -7, -52);
-    _buildWasteDisposal (  4, -8, -42);
-  }
-
-  /* ─── registerConduit — wires environment-built conduit into interactables ──── */
-  function registerConduit(conduitMesh) {
-    if (!conduitMesh) return;
-    conduitMesh.userData.type   = 'terminal';
-    conduitMesh.userData.id     = 'power_conduit';
-    conduitMesh.userData.active = false;
-    if (_interactables.indexOf(conduitMesh) === -1) {
-      _interactables.push(conduitMesh);
+      _registerFaunaNode(jellyGroup, idPrefix + '_' + i, 'Bioluminescent Jellyfish', 'jellyfish', offsetX, offsetY, offsetZ);
     }
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════════
-     ANIMATION LOOP — Independent per-instance motion
-     Every position and rotation update reads g.userData.phase and g.userData.origin.
-     Never reads or mutates a shared closure variable.
-     ═══════════════════════════════════════════════════════════════════════════════ */
-  function update(elapsedTime, delta) {
-    var now    = performance.now();
-    var rigPos = (window.ABYSS && window.ABYSS._rigPosition) ? window.ABYSS._rigPosition : null;
+  /* --- C. CLOWNFISH SCHOOL BUILDER --- */
+  function _buildClownfishSchool(centerX, centerY, centerZ, population, idPrefix) {
+    var clownCanvas = document.createElement('canvas');
+    clownCanvas.width = 256;
+    clownCanvas.height = 256;
+    var ctx = clownCanvas.getContext('2d');
 
-    /* ── O2_REFILL cooldown check & LED pulse ── */
-    if (_o2Terminal) {
-      var oud = _o2Terminal.userData;
-      if (oud.cooldown) {
-        var elapsed = (now - oud.cooldownStart) / 1000;
-        if (elapsed >= oud.cooldownSecs) {
-          oud.cooldown = false;
-          if (_o2Light) _o2Light.intensity = 2.0;
-        } else {
-          if (_o2Light) {
-            _o2Light.intensity = 0.4 + 0.3 * Math.abs(Math.sin(elapsedTime * 1.5));
-          }
-        }
-      }
+    ctx.fillStyle = '#ff4500';
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(60, 0, 40, 256);
+    ctx.fillRect(160, 0, 30, 256);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(55, 0, 5, 256);
+    ctx.fillRect(100, 0, 5, 256);
+    ctx.fillRect(155, 0, 5, 256);
+    ctx.fillRect(190, 0, 5, 256);
+
+    var clownTex = new THREE.CanvasTexture(clownCanvas);
+    var fishMat = new THREE.MeshPhongMaterial({ map: clownTex, shininess: 40 });
+
+    for (var i = 0; i < population; i++) {
+      var fishGroup = new THREE.Group();
+
+      var bodyGeo = new THREE.SphereGeometry(0.55, 12, 12);
+      var bodyMesh = new THREE.Mesh(bodyGeo, fishMat);
+      bodyMesh.scale.set(0.55, 0.95, 1.7);
+      fishGroup.add(bodyMesh);
+
+      var tailGeo = new THREE.ConeGeometry(0.45, 0.9, 4);
+      var tailMesh = new THREE.Mesh(tailGeo, fishMat);
+      tailMesh.rotation.x = Math.PI / 2;
+      tailMesh.position.z = -1.15;
+      tailMesh.name = 'tail';
+      fishGroup.add(tailMesh);
+
+      var finMat = new THREE.MeshBasicMaterial({ color: 0xff4500 });
+      var dorsalFin = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.6, 3), finMat);
+      dorsalFin.position.set(0, 0.7, 0.1);
+      dorsalFin.rotation.x = -0.4;
+      fishGroup.add(dorsalFin);
+
+      var offsetX = centerX + (Math.random() - 0.5) * 10.0;
+      var offsetY = centerY + (Math.random() - 0.5) * 5.0;
+      var offsetZ = centerZ + (Math.random() - 0.5) * 10.0;
+
+      _registerFaunaNode(fishGroup, idPrefix + '_' + i, 'Anemone Clownfish', 'clownfish', offsetX, offsetY, offsetZ);
+    }
+  }
+
+  /* --- D. MANTA RAY BUILDER --- */
+  function _buildMantaRay(x, y, z, id, name) {
+    var mantaGroup = new THREE.Group();
+
+    var bodyMat = new THREE.MeshPhongMaterial({ color: 0x182430, side: THREE.DoubleSide, roughness: 0.4 });
+    var bellyMat = new THREE.MeshPhongMaterial({ color: 0xe0e6ed, side: THREE.DoubleSide });
+
+    // Main Central Body Disc
+    var bodyGeo = new THREE.ConeGeometry(2.8, 6.5, 10);
+    var bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+    bodyMesh.rotation.x = Math.PI / 2;
+    bodyMesh.scale.set(1.1, 0.18, 1.0);
+    mantaGroup.add(bodyMesh);
+
+    // Left Wing
+    var wingShape = new THREE.Shape();
+    wingShape.moveTo(0, 0);
+    wingShape.lineTo(-7.5, -1.5);
+    wingShape.lineTo(-2.0, -4.5);
+    wingShape.lineTo(0, -2.5);
+    wingShape.closePath();
+
+    var wingExtrude = new THREE.ExtrudeGeometry(wingShape, { depth: 0.15, bevelEnabled: true, bevelThickness: 0.05 });
+    var leftWing = new THREE.Mesh(wingExtrude, bodyMat);
+    leftWing.rotation.x = Math.PI / 2;
+    leftWing.position.set(0, 0, 1.5);
+    leftWing.name = 'leftWing';
+    mantaGroup.add(leftWing);
+
+    // Right Wing
+    var rightWing = new THREE.Mesh(wingExtrude, bodyMat);
+    rightWing.scale.set(-1, 1, 1);
+    rightWing.rotation.x = Math.PI / 2;
+    rightWing.position.set(0, 0, 1.5);
+    rightWing.name = 'rightWing';
+    mantaGroup.add(rightWing);
+
+    // Whip Tail
+    var tailGeo = new THREE.CylinderGeometry(0.08, 0.02, 8.0, 6);
+    var tailMesh = new THREE.Mesh(tailGeo, bodyMat);
+    tailMesh.rotation.x = Math.PI / 2;
+    tailMesh.position.set(0, 0, -6.5);
+    mantaGroup.add(tailMesh);
+
+    _registerFaunaNode(mantaGroup, id, name, 'manta', x, y, z);
+  }
+
+  /* --- E. BIOLUMINESCENT EEL BUILDER --- */
+  function _buildBioluminescentEel(x, y, z, id, name) {
+    var eelGroup = new THREE.Group();
+
+    var eelMat = new THREE.MeshPhongMaterial({
+      color: 0x00ffaa,
+      emissive: 0x00aa66,
+      emissiveIntensity: 0.8,
+      wireframe: true
+    });
+
+    var segmentedBodyGeo = new THREE.CylinderGeometry(0.35, 0.08, 11.0, 8, 24);
+    var eelMesh = new THREE.Mesh(segmentedBodyGeo, eelMat);
+    eelMesh.rotation.x = Math.PI / 2;
+    eelGroup.add(eelMesh);
+
+    var headGeo = new THREE.SphereGeometry(0.42, 8, 8);
+    var headMesh = new THREE.Mesh(headGeo, eelMat);
+    headMesh.position.set(0, 0, 5.5);
+    headMesh.scale.set(0.9, 0.8, 1.4);
+    eelGroup.add(headMesh);
+
+    _registerFaunaNode(eelGroup, id, name, 'eel', x, y, z);
+  }
+
+  /* --- F. APEX SHARK BUILDER --- */
+  function _buildApexShark(x, y, z, id, name) {
+    var sharkGroup = new THREE.Group();
+
+    var sharkMat = new THREE.MeshPhongMaterial({ color: 0x2c3e50, shininess: 50, roughness: 0.3 });
+    var bellyMat = new THREE.MeshPhongMaterial({ color: 0xd5dbdb, shininess: 20 });
+
+    // Torso
+    var bodyGeo = new THREE.SphereGeometry(2.0, 14, 14);
+    var bodyMesh = new THREE.Mesh(bodyGeo, sharkMat);
+    bodyMesh.scale.set(0.75, 0.85, 3.4);
+    sharkGroup.add(bodyMesh);
+
+    // Dorsal Fin
+    var finGeo = new THREE.ConeGeometry(0.9, 2.6, 5);
+    var dorsalFin = new THREE.Mesh(finGeo, sharkMat);
+    dorsalFin.position.set(0, 2.0, -0.2);
+    dorsalFin.rotation.x = -0.45;
+    sharkGroup.add(dorsalFin);
+
+    // Pectoral Fins
+    var pecFinGeo = new THREE.BoxGeometry(2.2, 0.12, 1.1);
+    var leftPec = new THREE.Mesh(pecFinGeo, sharkMat);
+    leftPec.position.set(-1.8, -0.5, 1.0);
+    leftPec.rotation.z = -0.35;
+    leftPec.rotation.y = 0.4;
+    sharkGroup.add(leftPec);
+
+    var rightPec = new THREE.Mesh(pecFinGeo, sharkMat);
+    rightPec.position.set(1.8, -0.5, 1.0);
+    rightPec.rotation.z = 0.35;
+    rightPec.rotation.y = -0.4;
+    sharkGroup.add(rightPec);
+
+    // Tail Fin
+    var tailFinGeo = new THREE.ConeGeometry(1.2, 3.2, 4);
+    var tailFin = new THREE.Mesh(tailFinGeo, sharkMat);
+    tailFin.position.set(0, 0.4, -6.2);
+    tailFin.rotation.x = Math.PI / 2;
+    tailFin.name = 'sharkTail';
+    sharkGroup.add(tailFin);
+
+    _registerFaunaNode(sharkGroup, id, name, 'shark', x, y, z);
+  }
+
+  /* --- G. ANGLERFISH BUILDER --- */
+  function _buildAnglerfish(x, y, z, id, name) {
+    var anglerGroup = new THREE.Group();
+
+    var bodyMat = new THREE.MeshPhongMaterial({ color: 0x1c120c, roughness: 0.9, flatShading: true });
+    var bodyGeo = new THREE.DodecahedronGeometry(1.8, 1);
+    var bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+    bodyMesh.scale.set(0.9, 1.1, 1.3);
+    anglerGroup.add(bodyMesh);
+
+    // Lure Stalk (Illium)
+    var stalkGeo = new THREE.CylinderGeometry(0.04, 0.04, 2.2, 6);
+    var stalkMesh = new THREE.Mesh(stalkGeo, bodyMat);
+    stalkMesh.position.set(0, 1.6, 1.2);
+    stalkMesh.rotation.x = 0.6;
+    anglerGroup.add(stalkMesh);
+
+    // Lure Esca (Glowing Sphere)
+    var escaMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+    var escaMesh = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 10), escaMat);
+    escaMesh.position.set(0, 2.3, 2.1);
+    anglerGroup.add(escaMesh);
+
+    // Esca Light Source
+    var escaLight = new THREE.PointLight(0x00ffff, 1.8, 12);
+    escaLight.position.set(0, 2.3, 2.1);
+    anglerGroup.add(escaLight);
+
+    // Fangs
+    var toothMat = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
+    for (var f = 0; f < 8; f++) {
+      var fang = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.4, 4), toothMat);
+      var angle = (f / 8) * Math.PI - Math.PI / 2;
+      fang.position.set(Math.sin(angle) * 0.9, -0.4 + (f % 2) * 0.1, 1.8 + Math.cos(angle) * 0.3);
+      fang.rotation.x = Math.PI - 0.3;
+      anglerGroup.add(fang);
     }
 
-    /* ── SPECIMEN_DEPOSIT: jar hovers (Y bob) + slow spin ── */
-    if (_specimenJar) {
-      _specimenJar.position.y = 2.0 + Math.sin(elapsedTime * 1.2) * 0.22;
-      _specimenJar.rotation.y += delta * 0.55;
-      if (_specimenLight) {
-        _specimenLight.intensity = 1.8 + 0.25 * Math.sin(elapsedTime * 3.8);
-      }
+    _registerFaunaNode(anglerGroup, id, name, 'anglerfish', x, y, z);
+  }
+
+  /* --- H. GIANT ISOPOD BUILDER --- */
+  function _buildGiantIsopod(x, y, z, id, name) {
+    var isopodGroup = new THREE.Group();
+
+    var shellMat = new THREE.MeshPhongMaterial({ color: 0x8d7d6f, roughness: 0.7, flatShading: true });
+
+    // Segmented Carapace
+    for (var s = 0; s < 6; s++) {
+      var segGeo = new THREE.CylinderGeometry(1.2 - s * 0.12, 1.3 - s * 0.12, 0.5, 8);
+      var segMesh = new THREE.Mesh(segGeo, shellMat);
+      segMesh.rotation.x = Math.PI / 2;
+      segMesh.scale.set(1.2, 0.5, 1.0);
+      segMesh.position.set(0, 0.2, (s * 0.42) - 1.0);
+      isopodGroup.add(segMesh);
     }
 
-    /* ── WASTE_DISPOSAL: hatch lerp rotation (no AnimationClip) ── */
-    if (_wasteHatch) {
-      var wd = _wasteHatch.userData;
-      var hg = wd.hatchGroup;
-      if (hg) {
-        var target  = wd.targetRot;
-        var current = hg.rotation.y;
-        var diff    = target - current;
-        if (Math.abs(diff) > 0.002) {
-          hg.rotation.y += diff * Math.min(delta * 1.8, 1.0);
-        } else {
-          hg.rotation.y = target;
+    // Antennae
+    var antMat = new THREE.MeshBasicMaterial({ color: 0x4a3f35 });
+    var leftAnt = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.01, 1.8), antMat);
+    leftAnt.position.set(-0.4, 0.2, 1.6);
+    leftAnt.rotation.x = 1.2;
+    leftAnt.rotation.z = -0.4;
+    isopodGroup.add(leftAnt);
+
+    var rightAnt = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.01, 1.8), antMat);
+    rightAnt.position.set(0.4, 0.2, 1.6);
+    rightAnt.rotation.x = 1.2;
+    rightAnt.rotation.z = 0.4;
+    isopodGroup.add(rightAnt);
+
+    _registerFaunaNode(isopodGroup, id, name, 'isopod', x, y, z);
+  }
+
+  /* ===========================================================================
+     6. KINEMATIC ANIMATION ENGINE
+     =========================================================================== */
+
+  function update(delta, time) {
+    for (var i = 0; i < _faunaRegistry.length; i++) {
+      var item = _faunaRegistry[i];
+      var mesh = item.mesh;
+      var bp = item.basePosition;
+      var offset = item.phaseOffset || 0.0;
+
+      if (item.animType === 'turtle') {
+        mesh.position.x = bp.x + Math.sin(time * 0.35 + offset) * 16.0;
+        mesh.position.z = bp.z + Math.cos(time * 0.35 + offset) * 16.0;
+        mesh.position.y = bp.y + Math.sin(time * 0.8 + offset) * 1.5;
+        mesh.rotation.y = time * 0.35 + offset + Math.PI / 2;
+
+        var lw = mesh.getObjectByName('leftFlipper');
+        var rw = mesh.getObjectByName('rightFlipper');
+        if (lw && rw) {
+          lw.rotation.z = Math.sin(time * 2.8 + offset) * 0.35 - 0.2;
+          rw.rotation.z = -Math.sin(time * 2.8 + offset) * 0.35 + 0.2;
         }
 
-        var openFrac = hg.rotation.y / Math.PI;
-        if (wd.pitLight) {
-          wd.pitLight.intensity = openFrac * 2.2;
+      } else if (item.animType === 'jellyfish') {
+        mesh.position.y = bp.y + Math.sin(time * 1.4 + offset) * 2.2;
+        var scalePulse = 1.0 + Math.sin(time * 2.2 + offset) * 0.12;
+        mesh.scale.set(scalePulse, 1.0 / scalePulse, scalePulse);
+
+      } else if (item.animType === 'clownfish') {
+        mesh.position.x = bp.x + Math.sin(time * 2.2 + offset + i) * 3.2;
+        mesh.position.z = bp.z + Math.cos(time * 2.2 + offset + i) * 3.2;
+        mesh.position.y = bp.y + Math.sin(time * 3.0 + offset) * 0.6;
+
+        var tail = mesh.getObjectByName('tail');
+        if (tail) {
+          tail.rotation.y = Math.sin(time * 10.0 + i) * 0.4;
         }
 
-        if (wd.statusLED && wd.statusLED.material) {
-          var closedFrac = 1.0 - openFrac;
-          var rHex = Math.round(closedFrac * 0 + openFrac * 255);
-          var gHex = Math.round(closedFrac * 255 + openFrac * 68);
-          wd.statusLED.material.emissive.setRGB(rHex / 255, gHex / 255, 0);
-          wd.statusLED.material.color.setRGB(rHex / 255, gHex / 255, 0);
-        }
-      }
-    }
+      } else if (item.animType === 'manta') {
+        mesh.position.x = bp.x + Math.sin(time * 0.25 + offset) * 30.0;
+        mesh.position.z = bp.z + Math.cos(time * 0.25 + offset) * 30.0;
+        mesh.position.y = bp.y + Math.sin(time * 0.5 + offset) * 2.5;
+        mesh.rotation.y = time * 0.25 + offset + Math.PI / 2;
 
-    /* ── FAUNA ANIMATIONS (Strictly independent per instance) ── */
-    for (var i = 0; i < _fauna.length; i++) {
-      var g = _fauna[i];
-      if (!g.visible) continue;
-
-      var ud = g.userData;
-      var t  = elapsedTime * ud.speed + ud.phase;
-      var og = ud.origin;
-
-      /* ── Bioluminescent Eel: sinusoidal slither along Z, Y bob ±0.3 ── */
-      if (ud.species === 'eel') {
-        g.position.x = og.x + Math.sin(t * 0.25) * 1.5;
-        g.position.y = og.y + Math.sin(t * 1.2)  * 0.3;
-        g.position.z = og.z + Math.sin(t * 0.5)  * 4.0;
-
-        var edx = Math.cos(t * 0.25) * 1.5 * 0.25;
-        var edz = Math.cos(t * 0.5)  * 4.0 * 0.5;
-        g.rotation.y = Math.atan2(edx, edz);
-
-        if (ud.segments) {
-          for (var si = 0; si < ud.segments.length; si++) {
-            var seg = ud.segments[si];
-            seg.position.x = Math.sin(t * 2.0 + si * 0.85) * 0.45;
-            seg.position.z = Math.cos(t * 1.5 + si * 0.60) * 0.15;
-
-            var wave = (Math.sin(t * 3.0 + si * 0.90) + 1) * 0.5;
-            var g_ch = Math.round(0x88 + wave * (0xff - 0x88));
-            var b_ch = Math.round(0xff - wave * (0xff - 0x88));
-            seg.material.emissive.setHex((g_ch << 8) | b_ch);
-          }
-        }
-      }
-
-      /* ── Sea Turtle: elliptical XZ orbit around origin, gentle Y drift ── */
-      else if (ud.species === 'turtle') {
-        g.position.x = og.x + Math.sin(t * 0.35) * 7.0;
-        g.position.y = og.y + Math.sin(t * 0.60) * 0.4;
-        g.position.z = og.z + Math.cos(t * 0.35) * 4.5;
-
-        var tdx =  Math.cos(t * 0.35) * 7.0 * 0.35;
-        var tdz = -Math.sin(t * 0.35) * 4.5 * 0.35;
-        g.rotation.y = Math.atan2(tdx, -tdz);
-
-        if (ud.flippers) {
-          for (var fli = 0; fli < ud.flippers.length; fli++) {
-            ud.flippers[fli].rotation.z =
-              Math.sin(t * 2.2 + fli * Math.PI * 0.5) * 0.38 * (fli < 2 ? 1 : -0.55);
-          }
-        }
-      }
-
-      /* ── Jellyfish: vertical pulse (Y ±0.6), slow horizontal drift ── */
-      else if (ud.species === 'jellyfish') {
-        g.position.x = og.x + Math.sin(t * 0.30) * 1.2;
-        g.position.y = og.y + Math.sin(t * 1.50) * 0.6;
-        g.position.z = og.z + Math.cos(t * 0.25) * 1.2;
-
-        if (ud.bell) {
-          ud.bell.scale.y = 1.0 + Math.sin(t * 3.0) * 0.16;
-          ud.bell.scale.x = 1.0 - Math.sin(t * 3.0) * 0.08;
-          ud.bell.scale.z = 1.0 - Math.sin(t * 3.0) * 0.08;
+        var leftWing = mesh.getObjectByName('leftWing');
+        var rightWing = mesh.getObjectByName('rightWing');
+        if (leftWing && rightWing) {
+          var flap = Math.sin(time * 1.8 + offset) * 0.25;
+          leftWing.rotation.z = flap;
+          rightWing.rotation.z = -flap;
         }
 
-        for (var ci = 0; ci < g.children.length; ci++) {
-          var ch = g.children[ci];
-          if (ci > 0 && ch.isMesh) {
-            ch.rotation.z = Math.sin(t * 2.0 + ci * 0.9) * 0.22;
-          }
-        }
-      }
+      } else if (item.animType === 'eel') {
+        mesh.position.y = bp.y + Math.sin(time * 1.1 + offset) * 1.4;
+        mesh.rotation.z = Math.sin(time * 1.8 + offset) * 0.2;
+        mesh.rotation.y = Math.cos(time * 1.2 + offset) * 0.15;
 
-      /* ── Clownfish School: orbits kelp cluster ── */
-      else if (ud.species === 'clownfish') {
-        g.position.x = og.x + Math.sin(t * 0.40) * 2.0;
-        g.position.y = og.y + Math.sin(t * 0.80) * 0.3;
-        g.position.z = og.z + Math.cos(t * 0.40) * 2.0;
+      } else if (item.animType === 'shark') {
+        mesh.position.x = bp.x + Math.sin(time * 0.45 + offset) * 45.0;
+        mesh.position.z = bp.z + Math.cos(time * 0.45 + offset) * 45.0;
+        mesh.position.y = bp.y + Math.sin(time * 0.7 + offset) * 2.0;
+        mesh.rotation.y = time * 0.45 + offset + Math.PI / 2;
 
-        for (var cfi = 0; cfi < g.children.length; cfi++) {
-          var sub     = g.children[cfi];
-          var subPh   = sub.userData.phase !== undefined ? sub.userData.phase : cfi * (Math.PI * 2 / 3);
-          var tt      = t * 1.1 + subPh;
-          sub.position.x = Math.sin(tt) * 1.6 + Math.sin(tt * 2.2) * 0.5;
-          sub.position.y = Math.cos(tt * 1.3) * 0.5;
-          sub.position.z = Math.cos(tt) * 1.4;
-          sub.rotation.y = -tt + Math.PI;
-        }
-      }
-
-      /* ── Manta Ray: wide figure-8 across upper layer ── */
-      else if (ud.species === 'mantaray') {
-        g.position.x = og.x + Math.sin(t * 0.22) * 15.0;
-        g.position.y = og.y + Math.sin(t * 0.45) *  1.5;
-        g.position.z = og.z + Math.sin(t * 0.44) *  8.0;
-
-        var mdx = Math.cos(t * 0.22) * 15.0 * 0.22;
-        var mdz = Math.cos(t * 0.44) *  8.0 * 0.44;
-        g.rotation.y = Math.atan2(mdx, mdz);
-        g.rotation.z = -mdx * 0.06;
-
-        if (ud.wings) {
-          for (var wi = 0; wi < ud.wings.length; wi++) {
-            ud.wings[wi].rotation.z = (wi === 0 ? 1 : -1) * Math.sin(t * 1.4) * 0.3;
-          }
-        }
-      }
-
-      /* ── Patrol Shark: lerp between 4 perimeter waypoints, face travel direction ── */
-      else if (ud.species === 'shark' || ud.isShark) {
-        var wpCount   = SHARK_WAYPOINTS.length;
-        var cycleT    = (t * 0.08) % wpCount;
-        if (cycleT < 0) cycleT += wpCount;
-        var curIdx    = Math.floor(cycleT);
-        var nextIdx   = (curIdx + 1) % wpCount;
-        var segFrac   = cycleT - curIdx;
-
-        var pCur  = SHARK_WAYPOINTS[curIdx];
-        var pNext = SHARK_WAYPOINTS[nextIdx];
-
-        g.position.lerpVectors(pCur, pNext, segFrac);
-        g.position.y += Math.sin(t * 0.8) * 0.4;
-
-        var dirX = pNext.x - pCur.x;
-        var dirZ = pNext.z - pCur.z;
-        g.rotation.y = Math.atan2(-dirZ, dirX);
-        g.rotation.z = Math.sin(t * 1.5) * 0.05;
-
-        if (ud.tailFin) {
-          ud.tailFin.rotation.y = Math.sin(t * 3.5) * 0.28;
+        var sharkTail = mesh.getObjectByName('sharkTail');
+        if (sharkTail) {
+          sharkTail.rotation.y = Math.sin(time * 5.0) * 0.35;
         }
 
-        if (rigPos) {
-          var distSq = (g.position.x - rigPos.x) * (g.position.x - rigPos.x) +
-                       (g.position.z - rigPos.z) * (g.position.z - rigPos.z);
-          window.ABYSS._sharkNear = (distSq < 144);
-        } else {
-          window.ABYSS._sharkNear = false;
-        }
-      }
-    }
+      } else if (item.animType === 'anglerfish') {
+        mesh.position.y = bp.y + Math.sin(time * 0.9 + offset) * 0.8;
+        mesh.rotation.y = bp.y + Math.sin(time * 0.3 + offset) * 0.4;
 
-    /* ── Pollution bob & slow rotation ── */
-    for (var pi = 0; pi < _pollution.length; pi++) {
-      var pObj = _pollution[pi];
-      if (!pObj.userData.collected) {
-        pObj.rotation.y += delta * 0.36;
-        pObj.position.y  = pObj.userData.baseY + Math.sin(elapsedTime * 1.15 + pObj.position.x * 0.4) * 0.16;
+      } else if (item.animType === 'isopod') {
+        mesh.position.x = bp.x + Math.sin(time * 0.2 + offset) * 2.0;
+        mesh.position.z = bp.z + Math.cos(time * 0.2 + offset) * 2.0;
+
+      } else if (item.animType === 'glb_custom') {
+        mesh.rotation.y += (item.rotationSpeed || 0.2) * delta;
       }
     }
   }
 
-  /* ─── openWasteHatch / closeWasteHatch — called on dwell commit ─────────────── */
-  function openWasteHatch() {
-    if (!_wasteHatch) return;
-    _wasteHatch.userData.hatchOpen = true;
-    _wasteHatch.userData.targetRot = Math.PI;
-  }
+  /* ===========================================================================
+     7. PUBLIC MODULE EXPORTS
+     =========================================================================== */
 
-  function closeWasteHatch() {
-    if (!_wasteHatch) return;
-    _wasteHatch.userData.hatchOpen = false;
-    _wasteHatch.userData.targetRot = 0;
-  }
-
-  /* ─── startO2Cooldown — called after successful O2 dwell ────────────────────── */
-  function startO2Cooldown() {
-    if (!_o2Terminal) return;
-    _o2Terminal.userData.cooldown      = true;
-    _o2Terminal.userData.cooldownStart = performance.now();
-
-    var idx = _interactables.indexOf(_o2Terminal);
-    if (idx !== -1) _interactables.splice(idx, 1);
-
-    var self = _o2Terminal;
-    setTimeout(function () {
-      if (_interactables.indexOf(self) === -1) {
-        _interactables.push(self);
-      }
-    }, _o2Terminal.userData.cooldownSecs * 1000);
-  }
-
-  /* ─── reset — between sessions ──────────────────────────────────────────────── */
-  function reset() {
-    _fauna.forEach(function (f) {
-      if (f && f.userData) {
-        f.userData.scanned = false;
-        if (f.userData.origin) f.position.copy(f.userData.origin);
-      }
-    });
-
-    _pollution.forEach(function (p) {
-      p.userData.collected = false;
-      p.visible = true;
-      if (p.userData.origin) p.position.copy(p.userData.origin);
-      if (_interactables.indexOf(p) === -1) _interactables.push(p);
-    });
-
-    if (_o2Terminal) {
-      _o2Terminal.userData.cooldown = false;
-      if (_o2Light) _o2Light.intensity = 2.0;
-      if (_interactables.indexOf(_o2Terminal) === -1) _interactables.push(_o2Terminal);
-    }
-
-    if (_wasteHatch) {
-      _wasteHatch.userData.hatchOpen = false;
-      _wasteHatch.userData.targetRot = 0;
-      _wasteHatch.userData.disposed  = 0;
-      if (_interactables.indexOf(_wasteHatch) === -1) _interactables.push(_wasteHatch);
-    }
-
-    if (_specimenJar) {
-      var sd = _specimenJar.parent;
-      if (sd && sd.userData) {
-        sd.userData.deposited = 0;
-        if (_interactables.indexOf(sd) === -1) _interactables.push(sd);
-      }
-    }
-
-    window.ABYSS._sharkNear = false;
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════════════════
-     PUBLIC API — window.ABYSS.EntityManager
-     ═══════════════════════════════════════════════════════════════════════════════ */
-  window.ABYSS.EntityManager = {
-    buildAll:         buildAll,
-    buildPollution:   buildPollution,
-    registerConduit:  registerConduit,
-    update:           update,
-    reset:            reset,
-    spawnAll:         buildAll,
-    openWasteHatch:   openWasteHatch,
-    closeWasteHatch:  closeWasteHatch,
-    startO2Cooldown:  startO2Cooldown,
-    get interactables() { return _interactables; },
-    getInteractables: function () { return _interactables; },
-    getPollution:     function () { return _pollution; },
-    getFauna:         function () { return _fauna; }
+  return {
+    init: init,
+    loadGLBModel: loadGLBModel,
+    update: update
   };
-
-  // Legacy alias — backward compatible with window.EntityManager references
-  window.EntityManager = window.ABYSS.EntityManager;
-
-}());
+})();
